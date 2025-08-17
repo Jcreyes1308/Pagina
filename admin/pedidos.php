@@ -1,5 +1,5 @@
 <?php
-// admin/pedidos.php - Gestión de Pedidos con funcionalidades completas
+// admin/pedidos.php - Gestión de Pedidos con funcionalidades completas CORREGIDO
 session_start();
 
 if (!isset($_SESSION['admin_id'])) {
@@ -15,6 +15,11 @@ $success = '';
 $error = '';
 $action = $_GET['action'] ?? '';
 
+// Verificar mensaje de éxito
+if (isset($_GET['success']) && $_GET['success'] == '1') {
+    $success = 'Estado del pedido actualizado exitosamente';
+}
+
 // Procesar acciones
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -28,21 +33,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         if ($id_pedido > 0 && !empty($nuevo_estado)) {
             try {
-                $stmt = $conn->prepare("
-                    UPDATE pedidos SET 
-                    estado = ?, 
-                    notas_internas = ?, 
-                    numero_seguimiento = ?, 
-                    paqueteria = ?,
-                    fecha_entregado = CASE WHEN ? = 'entregado' THEN NOW() ELSE fecha_entregado END,
-                    updated_at = NOW()
-                    WHERE id = ?
-                ");
-                $stmt->execute([$nuevo_estado, $notas_internas, $numero_seguimiento, $paqueteria, $nuevo_estado, $id_pedido]);
+                // Verificar que el pedido existe
+                $stmt = $conn->prepare("SELECT id, estado FROM pedidos WHERE id = ? AND activo = 1");
+                $stmt->execute([$id_pedido]);
+                $pedido_actual = $stmt->fetch();
                 
-                $success = 'Estado del pedido actualizado exitosamente';
+                if (!$pedido_actual) {
+                    $error = 'Pedido no encontrado';
+                } else {
+                    // Preparar la actualización
+                    $update_sql = "
+                        UPDATE pedidos SET 
+                        estado = ?, 
+                        notas_internas = ?, 
+                        numero_seguimiento = ?, 
+                        paqueteria = ?,
+                        updated_at = NOW()
+                    ";
+                    
+                    $update_params = [$nuevo_estado, $notas_internas, $numero_seguimiento, $paqueteria];
+                    
+                    // Si el estado es 'entregado', actualizar fecha de entrega
+                    if ($nuevo_estado === 'entregado') {
+                        $update_sql .= ", fecha_entregado = NOW()";
+                    }
+                    
+                    $update_sql .= " WHERE id = ?";
+                    $update_params[] = $id_pedido;
+                    
+                    // Ejecutar la actualización
+                    $stmt = $conn->prepare($update_sql);
+                    $stmt->execute($update_params);
+                    
+                    // Verificar que se actualizó correctamente
+                    if ($stmt->rowCount() > 0) {
+                        // Insertar en el historial manualmente si es necesario
+                        if ($pedido_actual['estado'] !== $nuevo_estado) {
+                            try {
+                                $stmt_historial = $conn->prepare("
+                                    INSERT INTO pedido_estados_historial 
+                                    (id_pedido, estado_anterior, estado_nuevo, comentarios, usuario_cambio) 
+                                    VALUES (?, ?, ?, ?, ?)
+                                ");
+                                $stmt_historial->execute([
+                                    $id_pedido, 
+                                    $pedido_actual['estado'], 
+                                    $nuevo_estado, 
+                                    $notas_internas ?: 'Actualización manual desde admin', 
+                                    $_SESSION['admin_nombre'] ?? 'Admin'
+                                ]);
+                            } catch (Exception $e) {
+                                // Log del error pero no fallar la actualización principal
+                                error_log("Error al insertar historial: " . $e->getMessage());
+                            }
+                        }
+                        
+                        $success = 'Estado del pedido actualizado exitosamente';
+                        
+                        // Redirigir para evitar reenvío del formulario
+                        if (isset($_GET['id'])) {
+                            header("Location: pedidos.php?action=ver&id=" . $id_pedido . "&success=1");
+                            exit();
+                        }
+                    } else {
+                        $error = 'No se pudo actualizar el pedido. Verifica que los datos sean correctos.';
+                    }
+                }
             } catch (Exception $e) {
                 $error = 'Error al actualizar estado: ' . $e->getMessage();
+                error_log("Error actualizando pedido {$id_pedido}: " . $e->getMessage());
             }
         } else {
             $error = 'Datos inválidos para actualizar el estado';
@@ -165,8 +224,8 @@ $where_sql = implode(' AND ', $where_conditions);
 // Obtener pedidos
 try {
     $stmt = $conn->prepare("
-        SELECT p.*, c.nombre as cliente_nombre, c.email as cliente_email, c.telefono as cliente_telefono,
-               de.nombre_destinatario, de.calle_numero, de.ciudad, de.estado,
+       SELECT p.*, c.nombre as cliente_nombre, c.email as cliente_email, c.telefono as cliente_telefono,
+       de.nombre_destinatario, de.calle_numero, de.ciudad, de.estado as estado_direccion,
                COUNT(pd.id) as total_items
         FROM pedidos p
         LEFT JOIN clientes c ON p.id_cliente = c.id
@@ -197,12 +256,12 @@ try {
     ");
     $stats['por_estado'] = $stmt->fetchAll();
     
-    // Totales generales
+    // Totales generales (CORREGIDO - excluye cancelados y devueltos)
     $stmt = $conn->query("
         SELECT 
-            COUNT(*) as total_pedidos,
-            SUM(total) as ingresos_total,
-            AVG(total) as ticket_promedio,
+            COUNT(CASE WHEN estado NOT IN ('cancelado', 'devuelto') THEN 1 END) as total_pedidos,
+            COALESCE(SUM(CASE WHEN estado NOT IN ('cancelado', 'devuelto') THEN total ELSE 0 END), 0) as ingresos_total,
+            COALESCE(AVG(CASE WHEN estado NOT IN ('cancelado', 'devuelto') THEN total END), 0) as ticket_promedio,
             SUM(CASE WHEN estado IN ('pendiente', 'confirmado') THEN 1 ELSE 0 END) as pendientes
         FROM pedidos 
         WHERE activo = 1 AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -554,12 +613,23 @@ if ($action === 'crear') {
                                 Pedido <?= htmlspecialchars($pedido_detalle['numero_pedido']) ?>
                             </h5>
                             <?php 
+                            // DEBUG: Mostrar información del estado
+                            $estado_real = $pedido_detalle['estado'];
+                            echo "<!-- DEBUG DETALLE: Estado desde BD: '$estado_real' -->";
+                            
+                            // Verificar si el estado existe en el array
+                            if (!isset($estados_pedido[$estado_real])) {
+                                echo "<!-- ERROR DETALLE: Estado '$estado_real' no existe en estados_pedido -->";
+                                echo "<!-- Estados disponibles: " . implode(', ', array_keys($estados_pedido)) . " -->";
+                            }
+                            
                             $estado_actual = $pedido_detalle['estado'] ?? 'pendiente';
                             $estado_info = $estados_pedido[$estado_actual] ?? $estados_pedido['pendiente'];
                             ?>
                             <span class="estado-badge bg-<?= $estado_info['color'] ?>">
                                 <i class="fas fa-<?= $estado_info['icon'] ?>"></i>
                                 <?= $estado_info['label'] ?>
+                                <!-- DEBUG DETALLE: Mostrando '<?= $estado_actual ?>' para '<?= $estado_real ?>' -->
                             </span>
                         </div>
                         
@@ -975,12 +1045,23 @@ if ($action === 'crear') {
                                 
                                 <div class="col-md-2 text-center">
                                     <?php 
+                                    // DEBUG: Mostrar información del estado LISTA
+                                    $estado_real = $pedido['estado'];
+                                    echo "<!-- DEBUG LISTA: Estado desde BD: '$estado_real' -->";
+                                    
+                                    // Verificar si el estado existe en el array
+                                    if (!isset($estados_pedido[$estado_real])) {
+                                        echo "<!-- ERROR LISTA: Estado '$estado_real' no existe en estados_pedido -->";
+                                        echo "<!-- Estados disponibles: " . implode(', ', array_keys($estados_pedido)) . " -->";
+                                    }
+                                    
                                     $estado_actual = $pedido['estado'] ?? 'pendiente';
                                     $estado_info = $estados_pedido[$estado_actual] ?? $estados_pedido['pendiente'];
                                     ?>
                                     <span class="estado-badge bg-<?= $estado_info['color'] ?>">
                                         <i class="fas fa-<?= $estado_info['icon'] ?>"></i>
                                         <?= $estado_info['label'] ?>
+                                        <!-- DEBUG LISTA: Mostrando '<?= $estado_actual ?>' para '<?= $estado_real ?>' -->
                                     </span>
                                 </div>
                                 
@@ -1341,208 +1422,6 @@ if ($action === 'crear') {
                     btn.disabled = false;
                 }
             }, 5000);
-        });
-        
-        // Función para imprimir pedido (opcional)
-        function imprimirPedido(idPedido) {
-            const url = `imprimir_pedido.php?id=${idPedido}`;
-            window.open(url, '_blank', 'width=800,height=600');
-        }
-        
-        // Función para exportar pedidos (opcional)
-        function exportarPedidos() {
-            const params = new URLSearchParams(window.location.search);
-            params.set('export', 'excel');
-            window.location.href = `pedidos.php?${params.toString()}`;
-        }
-        
-        // Actualización automática de la página cada 5 minutos para nuevos pedidos
-        let autoRefresh = setInterval(() => {
-            if (document.querySelector('.estado-badge:contains("Pendiente")')) {
-                console.log('Verificando nuevos pedidos...');
-                // Aquí podrías hacer una llamada AJAX para verificar nuevos pedidos
-            }
-        }, 300000); // 5 minutos
-        
-        // Detener auto-refresh si el usuario está interactuando
-        let userActive = true;
-        let inactivityTimer;
-        
-        function resetInactivityTimer() {
-            clearTimeout(inactivityTimer);
-            userActive = true;
-            inactivityTimer = setTimeout(() => {
-                userActive = false;
-            }, 120000); // 2 minutos de inactividad
-        }
-        
-        document.addEventListener('click', resetInactivityTimer);
-        document.addEventListener('keypress', resetInactivityTimer);
-        document.addEventListener('scroll', resetInactivityTimer);
-        
-        // Función para notificaciones push (si está implementado)
-        function requestNotificationPermission() {
-            if ('Notification' in window && Notification.permission === 'default') {
-                Notification.requestPermission().then(permission => {
-                    if (permission === 'granted') {
-                        console.log('Notificaciones habilitadas');
-                    }
-                });
-            }
-        }
-        
-        // Solicitar permisos de notificación al cargar la página
-        requestNotificationPermission();
-        
-        // Función para mostrar notificación de nuevo pedido
-        function mostrarNotificacionNuevoPedido(numeroPedido, cliente) {
-            if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification('Nuevo Pedido Recibido', {
-                    body: `Pedido ${numeroPedido} de ${cliente}`,
-                    icon: '../assets/images/logo-small.png',
-                    tag: 'nuevo-pedido'
-                });
-            }
-        }
-        
-        // Atajos de teclado para navegación rápida
-        document.addEventListener('keydown', function(e) {
-            // Solo si no estamos en un input
-            if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'SELECT') {
-                switch(e.key) {
-                    case 'n': // Nuevo pedido
-                        if (e.ctrlKey) {
-                            e.preventDefault();
-                            window.location.href = 'pedidos.php?action=crear';
-                        }
-                        break;
-                    case 'f': // Focus en búsqueda
-                        if (e.ctrlKey) {
-                            e.preventDefault();
-                            const searchInput = document.querySelector('input[name="search"]');
-                            if (searchInput) {
-                                searchInput.focus();
-                                searchInput.select();
-                            }
-                        }
-                        break;
-                    case 'r': // Refresh
-                        if (e.ctrlKey) {
-                            e.preventDefault();
-                            window.location.reload();
-                        }
-                        break;
-                }
-            }
-        });
-        
-        // Tooltips para mostrar información adicional
-        const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-        const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
-        
-        // Función para confirmar acciones destructivas
-        function confirmarAccion(mensaje, callback) {
-            if (confirm(mensaje)) {
-                callback();
-            }
-        }
-        
-        // Función para formatear números como moneda
-        function formatearMoneda(cantidad) {
-            return new Intl.NumberFormat('es-MX', {
-                style: 'currency',
-                currency: 'MXN'
-            }).format(cantidad);
-        }
-        
-        // Función para calcular días transcurridos
-        function calcularDiasTranscurridos(fecha) {
-            const ahora = new Date();
-            const fechaPedido = new Date(fecha);
-            const diferencia = Math.floor((ahora - fechaPedido) / (1000 * 60 * 60 * 24));
-            return diferencia;
-        }
-        
-        // Agregar indicador visual para pedidos antiguos
-        document.querySelectorAll('.pedido-card').forEach(card => {
-            const fechaElement = card.querySelector('small.text-muted');
-            if (fechaElement) {
-                const fechaTexto = fechaElement.textContent;
-                // Extraer fecha del texto y calcular días
-                const match = fechaTexto.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-                if (match) {
-                    const [, dia, mes, año] = match;
-                    const fechaPedido = new Date(año, mes - 1, dia);
-                    const dias = calcularDiasTranscurridos(fechaPedido);
-                    
-                    if (dias > 7) {
-                        card.style.borderLeft = '4px solid #ffc107';
-                        const indicator = document.createElement('small');
-                        indicator.className = 'text-warning';
-                        indicator.innerHTML = `<i class="fas fa-clock"></i> ${dias} días`;
-                        fechaElement.appendChild(document.createElement('br'));
-                        fechaElement.appendChild(indicator);
-                    }
-                }
-            }
-        });
-        
-        // Función para búsqueda en tiempo real
-        let searchTimeout;
-        document.querySelector('input[name="search"]')?.addEventListener('input', function() {
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(() => {
-                // Aquí podrías implementar búsqueda AJAX
-                console.log('Buscando:', this.value);
-            }, 500);
-        });
-        
-        // Prevenir envío accidental de formularios
-        document.querySelectorAll('form').forEach(form => {
-            form.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && e.target.type !== 'submit') {
-                    e.preventDefault();
-                }
-            });
-        });
-        
-        // Función para copy to clipboard
-        function copiarAlPortapapeles(texto) {
-            navigator.clipboard.writeText(texto).then(() => {
-                // Mostrar feedback visual
-                const toast = document.createElement('div');
-                toast.className = 'toast show position-fixed top-0 end-0 m-3';
-                toast.setAttribute('role', 'alert');
-                toast.innerHTML = `
-                    <div class="toast-header">
-                        <i class="fas fa-check-circle text-success me-2"></i>
-                        <strong class="me-auto">Copiado</strong>
-                        <button type="button" class="btn-close" onclick="this.parentElement.parentElement.remove()"></button>
-                    </div>
-                    <div class="toast-body">
-                        Texto copiado al portapapeles
-                    </div>
-                `;
-                document.body.appendChild(toast);
-                
-                setTimeout(() => {
-                    toast.remove();
-                }, 3000);
-            }).catch(err => {
-                console.error('Error al copiar:', err);
-            });
-        }
-        
-        // Agregar botones de copia a números de pedido
-        document.querySelectorAll('.pedido-card h6').forEach(h6 => {
-            if (h6.textContent.includes('PED-')) {
-                h6.style.cursor = 'pointer';
-                h6.title = 'Click para copiar número de pedido';
-                h6.addEventListener('click', function() {
-                    const numeroPedido = this.textContent.trim().replace('🧾 ', '');
-                    copiarAlPortapapeles(numeroPedido);
-                });
-            }
         });
     </script>
 </body>

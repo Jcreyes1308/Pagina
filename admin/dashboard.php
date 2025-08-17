@@ -1,5 +1,5 @@
 <?php
-// admin/dashboard.php - Dashboard del administrador
+// admin/dashboard.php - Dashboard del administrador CORREGIDO
 session_start();
 
 // Verificar que está logueado como admin
@@ -12,7 +12,7 @@ require_once '../config/database.php';
 $database = new Database();
 $conn = $database->getConnection();
 
-// Obtener estadísticas
+// Obtener estadísticas CORREGIDAS
 $stats = [];
 try {
     // Total productos
@@ -23,12 +23,12 @@ try {
     $stmt = $conn->query("SELECT COUNT(*) as total FROM clientes WHERE activo = 1");
     $stats['clientes'] = $stmt->fetch()['total'];
     
-    // Total pedidos
-    $stmt = $conn->query("SELECT COUNT(*) as total FROM pedidos WHERE activo = 1");
+    // Total pedidos (solo exitosos - excluye cancelados y devueltos)
+    $stmt = $conn->query("SELECT COUNT(*) as total FROM pedidos WHERE activo = 1 AND estado NOT IN ('cancelado', 'devuelto')");
     $stats['pedidos'] = $stmt->fetch()['total'];
     
-    // Ingresos totales
-    $stmt = $conn->query("SELECT COALESCE(SUM(total), 0) as ingresos FROM pedidos WHERE activo = 1");
+    // Ingresos totales (solo de pedidos exitosos - excluye cancelados y devueltos)
+    $stmt = $conn->query("SELECT COALESCE(SUM(total), 0) as ingresos FROM pedidos WHERE activo = 1 AND estado NOT IN ('cancelado', 'devuelto')");
     $stats['ingresos'] = $stmt->fetch()['ingresos'];
     
     // Productos con stock bajo
@@ -51,15 +51,17 @@ try {
     ];
 }
 
-// Obtener productos más vendidos
+// Obtener productos más vendidos CORREGIDO
 $productos_populares = [];
 try {
     $stmt = $conn->query("
         SELECT p.nombre, COALESCE(SUM(pd.cantidad), 0) as total_vendido
         FROM productos p
         LEFT JOIN pedido_detalles pd ON p.id = pd.id_producto
-        WHERE p.activo = 1
+        LEFT JOIN pedidos pe ON pd.id_pedido = pe.id
+        WHERE p.activo = 1 AND (pe.id IS NULL OR (pe.activo = 1 AND pe.estado NOT IN ('cancelado', 'devuelto')))
         GROUP BY p.id, p.nombre
+        HAVING total_vendido > 0
         ORDER BY total_vendido DESC
         LIMIT 5
     ");
@@ -68,7 +70,7 @@ try {
     $productos_populares = [];
 }
 
-// Obtener pedidos recientes
+// Obtener pedidos recientes CORREGIDO (incluye todos los estados para el historial)
 $pedidos_recientes = [];
 try {
     $stmt = $conn->query("
@@ -205,7 +207,19 @@ try {
         
         .status-pendiente { background: #fff3cd; color: #856404; }
         .status-confirmado { background: #d1ecf1; color: #0c5460; }
+        .status-procesando { background: #cce5ff; color: #004085; }
+        .status-enviado { background: #e2e3e5; color: #383d41; }
+        .status-en_transito { background: #d6d8db; color: #1e2125; }
         .status-entregado { background: #d4edda; color: #155724; }
+        .status-cancelado { background: #f8d7da; color: #721c24; }
+        .status-devuelto { background: #fff3cd; color: #856404; }
+        
+        .alert-info-custom {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 15px;
+        }
         
         @media (max-width: 768px) {
             .sidebar {
@@ -280,6 +294,19 @@ try {
             </div>
         </div>
         
+        <!-- Alerta informativa sobre los cálculos -->
+        <div class="alert alert-info-custom mb-4">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>Nota:</strong> Las estadísticas de ingresos y pedidos excluyen automáticamente los pedidos cancelados y devueltos para mostrar datos precisos del rendimiento real.
+                </div>
+                <div class="col-md-4 text-md-end">
+                    <small><i class="fas fa-sync-alt"></i> Actualizado en tiempo real</small>
+                </div>
+            </div>
+        </div>
+        
         <!-- Estadísticas -->
         <div class="row g-4 mb-4">
             <div class="col-lg-2 col-md-4 col-sm-6">
@@ -304,8 +331,9 @@ try {
                 <div class="stat-card">
                     <div class="stat-number stat-orders"><?= number_format($stats['pedidos']) ?></div>
                     <div class="text-muted">
-                        <i class="fas fa-shopping-cart"></i> Pedidos
+                        <i class="fas fa-shopping-cart"></i> Pedidos Exitosos
                     </div>
+                    <small class="text-muted">(excluye cancelados)</small>
                 </div>
             </div>
             
@@ -313,8 +341,9 @@ try {
                 <div class="stat-card">
                     <div class="stat-number stat-income">$<?= number_format($stats['ingresos'], 0) ?></div>
                     <div class="text-muted">
-                        <i class="fas fa-dollar-sign"></i> Ingresos
+                        <i class="fas fa-dollar-sign"></i> Ingresos Reales
                     </div>
+                    <small class="text-muted">(excluye cancelados)</small>
                 </div>
             </div>
             
@@ -349,7 +378,7 @@ try {
                         <a href="productos.php?action=add" class="action-btn">
                             <i class="fas fa-plus"></i> Agregar Producto
                         </a>
-                        <a href="pedidos.php?filter=pendientes" class="action-btn">
+                        <a href="pedidos.php?estado=pendiente" class="action-btn">
                             <i class="fas fa-eye"></i> Ver Pedidos Pendientes
                         </a>
                         <a href="productos.php?filter=stock_bajo" class="action-btn">
@@ -377,7 +406,11 @@ try {
                             </div>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <p class="text-muted">No hay datos de ventas aún</p>
+                        <div class="text-center py-3">
+                            <i class="fas fa-box fa-2x text-muted mb-2"></i>
+                            <p class="text-muted mb-0">No hay ventas registradas aún</p>
+                            <small class="text-muted">Los productos aparecerán aquí cuando se realicen ventas exitosas</small>
+                        </div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -400,14 +433,27 @@ try {
                                     <div class="text-end">
                                         <div>$<?= number_format($pedido['total'], 2) ?></div>
                                         <span class="status-badge status-<?= $pedido['estado'] ?>">
-                                            <?= ucfirst($pedido['estado']) ?>
+                                            <?= ucfirst(str_replace('_', ' ', $pedido['estado'])) ?>
                                         </span>
                                     </div>
                                 </div>
+                                <small class="text-muted">
+                                    <i class="fas fa-calendar"></i> <?= date('d/m/Y H:i', strtotime($pedido['created_at'])) ?>
+                                </small>
                             </div>
                         <?php endforeach; ?>
+                        
+                        <div class="text-center mt-3">
+                            <a href="pedidos.php" class="btn btn-outline-primary btn-sm">
+                                <i class="fas fa-eye"></i> Ver Todos los Pedidos
+                            </a>
+                        </div>
                     <?php else: ?>
-                        <p class="text-muted">No hay pedidos recientes</p>
+                        <div class="text-center py-3">
+                            <i class="fas fa-shopping-cart fa-2x text-muted mb-2"></i>
+                            <p class="text-muted mb-0">No hay pedidos registrados aún</p>
+                            <small class="text-muted">Los pedidos aparecerán aquí cuando los clientes realicen compras</small>
+                        </div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -430,13 +476,35 @@ try {
                     card.style.transform = 'translateY(0)';
                 }, index * 100);
             });
+            
+            // Efecto de actualización en tiempo real (simulado)
+            setInterval(function() {
+                const activeIndicator = document.querySelector('.badge.bg-success');
+                if (activeIndicator) {
+                    activeIndicator.style.animation = 'pulse 1s ease-in-out';
+                    setTimeout(() => {
+                        activeIndicator.style.animation = '';
+                    }, 1000);
+                }
+            }, 30000);
         });
         
-        // Actualizar estadísticas cada 30 segundos
+        // Actualizar estadísticas cada 5 minutos (opcional)
         setInterval(function() {
             // Aquí podrías hacer una llamada AJAX para actualizar las estadísticas
-            console.log('Actualizando estadísticas...');
-        }, 30000);
+            console.log('Verificando actualizaciones...');
+        }, 300000); // 5 minutos
+        
+        // Estilo CSS para la animación pulse
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.7; }
+                100% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
     </script>
 </body>
 </html>
