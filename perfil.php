@@ -1,5 +1,5 @@
 <?php
-// perfil.php - Página de perfil del usuario
+// perfil.php - Página de perfil del usuario COMPLETA
 session_start();
 
 // Verificar que el usuario esté logueado
@@ -23,7 +23,6 @@ try {
     $usuario = $stmt->fetch();
     
     if (!$usuario) {
-        // Usuario no encontrado - cerrar sesión
         session_destroy();
         header('Location: login.php');
         exit();
@@ -33,7 +32,27 @@ try {
     $usuario = [];
 }
 
-// Procesar formulario de actualización
+// Obtener métodos de pago del usuario
+$metodos_pago = [];
+try {
+    $stmt = $conn->prepare("SELECT * FROM metodos_pago WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+    $stmt->execute([$_SESSION['usuario_id']]);
+    $metodos_pago = $stmt->fetchAll();
+} catch (Exception $e) {
+    error_log("Error obteniendo métodos de pago: " . $e->getMessage());
+}
+
+// Obtener direcciones del usuario
+$direcciones = [];
+try {
+    $stmt = $conn->prepare("SELECT * FROM direcciones_envio WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+    $stmt->execute([$_SESSION['usuario_id']]);
+    $direcciones = $stmt->fetchAll();
+} catch (Exception $e) {
+    error_log("Error obteniendo direcciones: " . $e->getMessage());
+}
+
+// Procesar formularios
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
@@ -46,16 +65,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'El nombre es requerido';
         } else {
             try {
-                $stmt = $conn->prepare("UPDATE clientes SET nombre = ?, telefono = ?, direccion = ?, updated_at = NOW() WHERE id = ?");
+                $stmt = $conn->prepare("UPDATE clientes SET nombre = ?, telefono = ?, direccion = ? WHERE id = ?");
                 $stmt->execute([$nombre, $telefono, $direccion, $_SESSION['usuario_id']]);
                 
-                // Actualizar sesión
                 $_SESSION['usuario_nombre'] = $nombre;
-                $_SESSION['usuario_telefono'] = $telefono;
-                
                 $success = 'Perfil actualizado correctamente';
                 
-                // Recargar datos
                 $usuario['nombre'] = $nombre;
                 $usuario['telefono'] = $telefono;
                 $usuario['direccion'] = $direccion;
@@ -82,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             try {
                 $new_password_hash = password_hash($new_password, PASSWORD_DEFAULT);
-                $stmt = $conn->prepare("UPDATE clientes SET password = ?, updated_at = NOW() WHERE id = ?");
+                $stmt = $conn->prepare("UPDATE clientes SET password = ? WHERE id = ?");
                 $stmt->execute([$new_password_hash, $_SESSION['usuario_id']]);
                 
                 $success = 'Contraseña actualizada correctamente';
@@ -90,6 +105,132 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } catch (Exception $e) {
                 $error = 'Error al cambiar contraseña: ' . $e->getMessage();
             }
+        }
+    }
+    
+    elseif ($action === 'add_payment_method') {
+        $tipo = $_POST['tipo_tarjeta'] ?? 'tarjeta_credito';
+        $numero_tarjeta = preg_replace('/\s+/', '', $_POST['numero_tarjeta'] ?? '');
+        $mes_exp = $_POST['mes_expiracion'] ?? '';
+        $ano_exp = $_POST['ano_expiracion'] ?? '';
+        $nombre_titular = trim($_POST['nombre_titular'] ?? '');
+        $banco = trim($_POST['banco_emisor'] ?? '');
+        $es_principal = isset($_POST['es_principal']) ? 1 : 0;
+        
+        if (empty($numero_tarjeta) || empty($mes_exp) || empty($ano_exp) || empty($nombre_titular)) {
+            $error = 'Todos los campos de la tarjeta son requeridos';
+        } elseif (strlen($numero_tarjeta) < 13 || strlen($numero_tarjeta) > 19) {
+            $error = 'Número de tarjeta inválido';
+        } else {
+            try {
+                // En producción, aquí encriptarías el número completo
+                $ultimos_4 = substr($numero_tarjeta, -4);
+                $nombre_tarjeta = '';
+                
+                // Detectar tipo de tarjeta por el número
+                if (preg_match('/^4/', $numero_tarjeta)) {
+                    $nombre_tarjeta = 'Visa';
+                } elseif (preg_match('/^5[1-5]/', $numero_tarjeta)) {
+                    $nombre_tarjeta = 'Mastercard';
+                } elseif (preg_match('/^3[47]/', $numero_tarjeta)) {
+                    $nombre_tarjeta = 'American Express';
+                } else {
+                    $nombre_tarjeta = 'Tarjeta';
+                }
+                
+                // Si es principal, quitar principal de otros
+                if ($es_principal) {
+                    $stmt = $conn->prepare("UPDATE metodos_pago SET es_principal = 0 WHERE id_cliente = ?");
+                    $stmt->execute([$_SESSION['usuario_id']]);
+                }
+                
+                $stmt = $conn->prepare("
+                    INSERT INTO metodos_pago (id_cliente, tipo, nombre_tarjeta, ultimos_4_digitos, mes_expiracion, ano_expiracion, nombre_titular, banco_emisor, es_principal) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$_SESSION['usuario_id'], $tipo, $nombre_tarjeta, $ultimos_4, $mes_exp, $ano_exp, $nombre_titular, $banco, $es_principal]);
+                
+                $success = 'Método de pago agregado correctamente';
+                
+                // Recargar métodos de pago
+                $stmt = $conn->prepare("SELECT * FROM metodos_pago WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+                $stmt->execute([$_SESSION['usuario_id']]);
+                $metodos_pago = $stmt->fetchAll();
+                
+            } catch (Exception $e) {
+                $error = 'Error al agregar método de pago: ' . $e->getMessage();
+            }
+        }
+    }
+    
+    elseif ($action === 'add_address') {
+        $nombre_direccion = trim($_POST['nombre_direccion'] ?? '');
+        $nombre_destinatario = trim($_POST['nombre_destinatario'] ?? '');
+        $telefono_contacto = trim($_POST['telefono_contacto'] ?? '');
+        $calle_numero = trim($_POST['calle_numero'] ?? '');
+        $colonia = trim($_POST['colonia'] ?? '');
+        $ciudad = trim($_POST['ciudad'] ?? '');
+        $estado = trim($_POST['estado'] ?? '');
+        $codigo_postal = trim($_POST['codigo_postal'] ?? '');
+        $referencias = trim($_POST['referencias'] ?? '');
+        $es_principal = isset($_POST['es_principal_dir']) ? 1 : 0;
+        
+        if (empty($nombre_direccion) || empty($nombre_destinatario) || empty($calle_numero) || empty($ciudad) || empty($estado)) {
+            $error = 'Los campos marcados son requeridos';
+        } else {
+            try {
+                // Si es principal, quitar principal de otras
+                if ($es_principal) {
+                    $stmt = $conn->prepare("UPDATE direcciones_envio SET es_principal = 0 WHERE id_cliente = ?");
+                    $stmt->execute([$_SESSION['usuario_id']]);
+                }
+                
+                $stmt = $conn->prepare("
+                    INSERT INTO direcciones_envio (id_cliente, nombre_direccion, nombre_destinatario, telefono_contacto, calle_numero, colonia, ciudad, estado, codigo_postal, referencias, es_principal) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$_SESSION['usuario_id'], $nombre_direccion, $nombre_destinatario, $telefono_contacto, $calle_numero, $colonia, $ciudad, $estado, $codigo_postal, $referencias, $es_principal]);
+                
+                $success = 'Dirección agregada correctamente';
+                
+                // Recargar direcciones
+                $stmt = $conn->prepare("SELECT * FROM direcciones_envio WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+                $stmt->execute([$_SESSION['usuario_id']]);
+                $direcciones = $stmt->fetchAll();
+                
+            } catch (Exception $e) {
+                $error = 'Error al agregar dirección: ' . $e->getMessage();
+            }
+        }
+    }
+    
+    elseif ($action === 'delete_payment' && isset($_POST['id_metodo'])) {
+        try {
+            $stmt = $conn->prepare("UPDATE metodos_pago SET activo = 0 WHERE id = ? AND id_cliente = ?");
+            $stmt->execute([$_POST['id_metodo'], $_SESSION['usuario_id']]);
+            $success = 'Método de pago eliminado';
+            
+            // Recargar métodos de pago
+            $stmt = $conn->prepare("SELECT * FROM metodos_pago WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+            $stmt->execute([$_SESSION['usuario_id']]);
+            $metodos_pago = $stmt->fetchAll();
+        } catch (Exception $e) {
+            $error = 'Error al eliminar método de pago';
+        }
+    }
+    
+    elseif ($action === 'delete_address' && isset($_POST['id_direccion'])) {
+        try {
+            $stmt = $conn->prepare("UPDATE direcciones_envio SET activo = 0 WHERE id = ? AND id_cliente = ?");
+            $stmt->execute([$_POST['id_direccion'], $_SESSION['usuario_id']]);
+            $success = 'Dirección eliminada';
+            
+            // Recargar direcciones
+            $stmt = $conn->prepare("SELECT * FROM direcciones_envio WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
+            $stmt->execute([$_SESSION['usuario_id']]);
+            $direcciones = $stmt->fetchAll();
+        } catch (Exception $e) {
+            $error = 'Error al eliminar dirección';
         }
     }
 }
@@ -104,16 +245,10 @@ $stats = [
 
 try {
     // Contar items en carrito
-    $stmt = $conn->prepare("
-        SELECT COALESCE(SUM(cantidad), 0) as total 
-        FROM carrito_compras 
-        WHERE id_cliente = ?
-    ");
+    $stmt = $conn->prepare("SELECT COALESCE(SUM(cantidad), 0) as total FROM carrito_compras WHERE id_cliente = ?");
     $stmt->execute([$_SESSION['usuario_id']]);
     $result = $stmt->fetch();
     $stats['items_carrito'] = $result['total'];
-    
-    // Aquí podrías agregar más estadísticas cuando implementes el sistema de pedidos
     
 } catch (Exception $e) {
     error_log("Error obteniendo estadísticas: " . $e->getMessage());
@@ -165,38 +300,45 @@ try {
             margin: 0 auto 20px auto;
         }
         
-        .stat-card {
-            background: linear-gradient(45deg, #f8f9fa, #e9ecef);
+        .payment-card, .address-card {
+            border: 2px solid #e9ecef;
             border-radius: 10px;
             padding: 20px;
-            text-align: center;
-            height: 100%;
-            border: none;
+            margin-bottom: 15px;
+            position: relative;
             transition: all 0.3s ease;
         }
         
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        .payment-card:hover, .address-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);
         }
         
-        .stat-number {
-            font-size: 2rem;
+        .payment-card.principal, .address-card.principal {
+            border-color: #28a745;
+            background: #f8fff9;
+        }
+        
+        .principal-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #28a745;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+        
+        .card-brand {
             font-weight: bold;
             color: #667eea;
         }
         
-        .form-control {
-            border-radius: 10px;
-            border: 2px solid #e9ecef;
-            padding: 12px 15px;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
-        }
+        .card-visa { color: #1a1f71; }
+        .card-mastercard { color: #eb001b; }
+        .card-amex { color: #006fcf; }
         
         .btn-update {
             background: linear-gradient(45deg, #667eea, #764ba2);
@@ -221,18 +363,41 @@ try {
             border-bottom: 2px solid #f0f0f0;
         }
         
-        .info-item {
-            padding: 15px 0;
-            border-bottom: 1px solid #f0f0f0;
+        .modal-content {
+            border-radius: 15px;
         }
         
-        .info-item:last-child {
-            border-bottom: none;
+        .form-control {
+            border-radius: 10px;
+            border: 2px solid #e9ecef;
+            padding: 12px 15px;
+            transition: all 0.3s ease;
         }
         
-        .breadcrumb {
-            background: none;
-            margin-bottom: 0;
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .stat-card {
+            background: linear-gradient(45deg, #f8f9fa, #e9ecef);
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            height: 100%;
+            border: none;
+            transition: all 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
         }
         
         .password-toggle {
@@ -246,9 +411,21 @@ try {
             cursor: pointer;
         }
         
-        .alert {
-            border-radius: 10px;
+        .breadcrumb {
+            background: none;
+            margin-bottom: 0;
+        }
+        
+        .nav-tabs .nav-link {
+            border-radius: 10px 10px 0 0;
             border: none;
+            color: #667eea;
+            font-weight: bold;
+        }
+        
+        .nav-tabs .nav-link.active {
+            background: #667eea;
+            color: white;
         }
         
         @media (max-width: 768px) {
@@ -330,7 +507,7 @@ try {
                     <h1 class="display-5 mb-3">
                         <i class="fas fa-user-circle me-3"></i> Mi Perfil
                     </h1>
-                    <p class="lead">Gestiona tu información personal y configuración de cuenta</p>
+                    <p class="lead">Gestiona tu información personal, métodos de pago y direcciones</p>
                 </div>
                 <div class="col-md-4 text-md-end">
                     <div class="avatar">
@@ -383,13 +560,6 @@ try {
                         </div>
                         
                         <div class="info-item">
-                            <strong><i class="fas fa-map-marker-alt me-2"></i> Dirección:</strong><br>
-                            <span class="text-muted">
-                                <?= $usuario['direccion'] ? htmlspecialchars($usuario['direccion']) : 'No especificada' ?>
-                            </span>
-                        </div>
-                        
-                        <div class="info-item">
                             <strong><i class="fas fa-shield-alt me-2"></i> Estado:</strong><br>
                             <span class="badge bg-success">Cuenta Activa</span>
                         </div>
@@ -422,155 +592,327 @@ try {
                             </div>
                             <div class="col-6">
                                 <div class="stat-card">
-                                    <div class="stat-number"><?= $stats['pedidos_pendientes'] ?></div>
-                                    <small class="text-muted">Pendientes</small>
+                                    <div class="stat-number"><?= count($metodos_pago) ?></div>
+                                    <small class="text-muted">Métodos Pago</small>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Panel derecho - Formularios de edición -->
+                <!-- Panel derecho - Pestañas de gestión -->
                 <div class="col-lg-8">
-                    <!-- Editar información personal -->
-                    <div class="profile-card">
-                        <h5 class="section-title">
-                            <i class="fas fa-edit"></i> Editar Información Personal
-                        </h5>
-                        
-                        <form method="POST" action="" id="profileForm">
-                            <input type="hidden" name="action" value="update_profile">
-                            
-                            <div class="row">
-                                <div class="col-12 mb-3">
-                                    <label for="nombre" class="form-label">
-                                        <i class="fas fa-user"></i> Nombre Completo *
-                                    </label>
-                                    <input type="text" class="form-control" id="nombre" name="nombre" 
-                                           value="<?= htmlspecialchars($usuario['nombre'] ?? '') ?>" 
-                                           required maxlength="100">
-                                </div>
-                                
-                                <div class="col-md-6 mb-3">
-                                    <label for="email_display" class="form-label">
-                                        <i class="fas fa-envelope"></i> Correo Electrónico
-                                    </label>
-                                    <input type="email" class="form-control" id="email_display" 
-                                           value="<?= htmlspecialchars($usuario['email'] ?? '') ?>" 
-                                           readonly disabled>
-                                    <small class="text-muted">
-                                        Para cambiar tu email, contacta al administrador
-                                    </small>
-                                </div>
-                                
-                                <div class="col-md-6 mb-3">
-                                    <label for="telefono" class="form-label">
-                                        <i class="fas fa-phone"></i> Teléfono
-                                    </label>
-                                    <input type="tel" class="form-control" id="telefono" name="telefono" 
-                                           value="<?= htmlspecialchars($usuario['telefono'] ?? '') ?>" 
-                                           maxlength="20" placeholder="555-0123">
-                                </div>
-                                
-                                <div class="col-12 mb-4">
-                                    <label for="direccion" class="form-label">
-                                        <i class="fas fa-map-marker-alt"></i> Dirección
-                                    </label>
-                                    <textarea class="form-control" id="direccion" name="direccion" 
-                                              rows="3" maxlength="200" 
-                                              placeholder="Tu dirección completa..."><?= htmlspecialchars($usuario['direccion'] ?? '') ?></textarea>
-                                </div>
-                            </div>
-                            
-                            <button type="submit" class="btn btn-update">
-                                <i class="fas fa-save"></i> Actualizar Información
+                    <!-- Pestañas de navegación -->
+                    <ul class="nav nav-tabs mb-4" id="profileTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="personal-tab" data-bs-toggle="tab" data-bs-target="#personal" type="button" role="tab">
+                                <i class="fas fa-user"></i> Información Personal
                             </button>
-                        </form>
-                    </div>
-
-                    <!-- Cambiar contraseña -->
-                    <div class="profile-card">
-                        <h5 class="section-title">
-                            <i class="fas fa-lock"></i> Cambiar Contraseña
-                        </h5>
-                        
-                        <form method="POST" action="" id="passwordForm">
-                            <input type="hidden" name="action" value="change_password">
-                            
-                            <div class="row">
-                                <div class="col-12 mb-3">
-                                    <label for="current_password" class="form-label">
-                                        <i class="fas fa-key"></i> Contraseña Actual *
-                                    </label>
-                                    <div class="position-relative">
-                                        <input type="password" class="form-control" id="current_password" 
-                                               name="current_password" required>
-                                        <button type="button" class="password-toggle" onclick="togglePassword('current_password')">
-                                            <i class="fas fa-eye" id="current_password-icon"></i>
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <div class="col-md-6 mb-3">
-                                    <label for="new_password" class="form-label">
-                                        <i class="fas fa-lock"></i> Nueva Contraseña *
-                                    </label>
-                                    <div class="position-relative">
-                                        <input type="password" class="form-control" id="new_password" 
-                                               name="new_password" required minlength="6">
-                                        <button type="button" class="password-toggle" onclick="togglePassword('new_password')">
-                                            <i class="fas fa-eye" id="new_password-icon"></i>
-                                        </button>
-                                    </div>
-                                    <small class="text-muted">Mínimo 6 caracteres</small>
-                                </div>
-                                
-                                <div class="col-md-6 mb-4">
-                                    <label for="confirm_password" class="form-label">
-                                        <i class="fas fa-lock"></i> Confirmar Nueva Contraseña *
-                                    </label>
-                                    <div class="position-relative">
-                                        <input type="password" class="form-control" id="confirm_password" 
-                                               name="confirm_password" required minlength="6">
-                                        <button type="button" class="password-toggle" onclick="togglePassword('confirm_password')">
-                                            <i class="fas fa-eye" id="confirm_password-icon"></i>
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <button type="submit" class="btn btn-warning">
-                                <i class="fas fa-shield-alt"></i> Cambiar Contraseña
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="payment-tab" data-bs-toggle="tab" data-bs-target="#payment" type="button" role="tab">
+                                <i class="fas fa-credit-card"></i> Métodos de Pago
                             </button>
-                        </form>
-                    </div>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="addresses-tab" data-bs-toggle="tab" data-bs-target="#addresses" type="button" role="tab">
+                                <i class="fas fa-map-marker-alt"></i> Direcciones
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="security-tab" data-bs-toggle="tab" data-bs-target="#security" type="button" role="tab">
+                                <i class="fas fa-shield-alt"></i> Seguridad
+                            </button>
+                        </li>
+                    </ul>
 
-                    <!-- Acciones de cuenta -->
-                    <div class="profile-card">
-                        <h5 class="section-title">
-                            <i class="fas fa-cog"></i> Acciones de Cuenta
-                        </h5>
-                        
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <a href="carrito.php" class="btn btn-outline-primary w-100">
-                                    <i class="fas fa-shopping-cart"></i> Ver Mi Carrito
-                                </a>
+                    <!-- Contenido de las pestañas -->
+                    <div class="tab-content" id="profileTabContent">
+                        <!-- Información Personal -->
+                        <div class="tab-pane fade show active" id="personal" role="tabpanel">
+                            <div class="profile-card">
+                                <h5 class="section-title">
+                                    <i class="fas fa-edit"></i> Editar Información Personal
+                                </h5>
+                                
+                                <form method="POST" action="" id="profileForm">
+                                    <input type="hidden" name="action" value="update_profile">
+                                    
+                                    <div class="row">
+                                        <div class="col-12 mb-3">
+                                            <label for="nombre" class="form-label">
+                                                <i class="fas fa-user"></i> Nombre Completo *
+                                            </label>
+                                            <input type="text" class="form-control" id="nombre" name="nombre" 
+                                                   value="<?= htmlspecialchars($usuario['nombre'] ?? '') ?>" 
+                                                   required maxlength="100">
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label for="email_display" class="form-label">
+                                                <i class="fas fa-envelope"></i> Correo Electrónico
+                                            </label>
+                                            <input type="email" class="form-control" id="email_display" 
+                                                   value="<?= htmlspecialchars($usuario['email'] ?? '') ?>" 
+                                                   readonly disabled>
+                                            <small class="text-muted">
+                                                Para cambiar tu email, contacta al administrador
+                                            </small>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label for="telefono" class="form-label">
+                                                <i class="fas fa-phone"></i> Teléfono
+                                            </label>
+                                            <input type="tel" class="form-control" id="telefono" name="telefono" 
+                                                   value="<?= htmlspecialchars($usuario['telefono'] ?? '') ?>" 
+                                                   maxlength="20" placeholder="555-0123">
+                                        </div>
+                                        
+                                        <div class="col-12 mb-4">
+                                            <label for="direccion" class="form-label">
+                                                <i class="fas fa-map-marker-alt"></i> Dirección General
+                                            </label>
+                                            <textarea class="form-control" id="direccion" name="direccion" 
+                                                      rows="3" maxlength="200" 
+                                                      placeholder="Tu dirección general..."><?= htmlspecialchars($usuario['direccion'] ?? '') ?></textarea>
+                                            <small class="text-muted">Nota: También puedes gestionar direcciones específicas en la pestaña "Direcciones"</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-update">
+                                        <i class="fas fa-save"></i> Actualizar Información
+                                    </button>
+                                </form>
                             </div>
-                            <div class="col-md-6">
-                                <a href="mis_pedidos.php" class="btn btn-outline-info w-100">
-                                    <i class="fas fa-history"></i> Historial de Pedidos
-                                </a>
+                        </div>
+
+                        <!-- Métodos de Pago -->
+                        <div class="tab-pane fade" id="payment" role="tabpanel">
+                            <div class="profile-card">
+                                <div class="d-flex justify-content-between align-items-center mb-4">
+                                    <h5 class="section-title mb-0">
+                                        <i class="fas fa-credit-card"></i> Mis Métodos de Pago
+                                    </h5>
+                                    <button class="btn btn-update" data-bs-toggle="modal" data-bs-target="#addPaymentModal">
+                                        <i class="fas fa-plus"></i> Agregar Tarjeta
+                                    </button>
+                                </div>
+                                
+                                <?php if (count($metodos_pago) > 0): ?>
+                                    <?php foreach ($metodos_pago as $metodo): ?>
+                                        <div class="payment-card <?= $metodo['es_principal'] ? 'principal' : '' ?>">
+                                            <?php if ($metodo['es_principal']): ?>
+                                                <div class="principal-badge">
+                                                    <i class="fas fa-star"></i> Principal
+                                                </div>
+                                            <?php endif; ?>
+                                            
+                                            <div class="row align-items-center">
+                                                <div class="col-md-8">
+                                                    <div class="d-flex align-items-center mb-2">
+                                                        <i class="fas fa-credit-card fa-2x me-3 text-primary"></i>
+                                                        <div>
+                                                            <h6 class="mb-0 card-brand card-<?= strtolower($metodo['nombre_tarjeta']) ?>">
+                                                                <?= htmlspecialchars($metodo['nombre_tarjeta']) ?> 
+                                                                •••• <?= htmlspecialchars($metodo['ultimos_4_digitos']) ?>
+                                                            </h6>
+                                                            <small class="text-muted">
+                                                                <?= htmlspecialchars($metodo['nombre_titular']) ?>
+                                                            </small>
+                                                        </div>
+                                                    </div>
+                                                    <div class="row">
+                                                        <div class="col-6">
+                                                            <small class="text-muted">
+                                                                <strong>Expira:</strong> <?= $metodo['mes_expiracion'] ?>/<?= $metodo['ano_expiracion'] ?>
+                                                            </small>
+                                                        </div>
+                                                        <div class="col-6">
+                                                            <small class="text-muted">
+                                                                <strong>Banco:</strong> <?= htmlspecialchars($metodo['banco_emisor'] ?? 'No especificado') ?>
+                                                            </small>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-4 text-end">
+                                                    <form method="POST" style="display: inline;">
+                                                        <input type="hidden" name="action" value="delete_payment">
+                                                        <input type="hidden" name="id_metodo" value="<?= $metodo['id'] ?>">
+                                                        <button type="submit" class="btn btn-outline-danger btn-sm" 
+                                                                onclick="return confirm('¿Eliminar este método de pago?')">
+                                                            <i class="fas fa-trash"></i>
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="text-center py-5">
+                                        <i class="fas fa-credit-card fa-3x text-muted mb-3"></i>
+                                        <h5>No tienes métodos de pago registrados</h5>
+                                        <p class="text-muted">Agrega una tarjeta para realizar compras más rápido</p>
+                                    </div>
+                                <?php endif; ?>
                             </div>
-                            <div class="col-md-6">
-                                <a href="productos.php" class="btn btn-outline-success w-100">
-                                    <i class="fas fa-shopping-bag"></i> Continuar Comprando
-                                </a>
+                        </div>
+
+                        <!-- Direcciones -->
+                        <div class="tab-pane fade" id="addresses" role="tabpanel">
+                            <div class="profile-card">
+                                <div class="d-flex justify-content-between align-items-center mb-4">
+                                    <h5 class="section-title mb-0">
+                                        <i class="fas fa-map-marker-alt"></i> Mis Direcciones de Envío
+                                    </h5>
+                                    <button class="btn btn-update" data-bs-toggle="modal" data-bs-target="#addAddressModal">
+                                        <i class="fas fa-plus"></i> Agregar Dirección
+                                    </button>
+                                </div>
+                                
+                                <?php if (count($direcciones) > 0): ?>
+                                    <?php foreach ($direcciones as $direccion): ?>
+                                        <div class="address-card <?= $direccion['es_principal'] ? 'principal' : '' ?>">
+                                            <?php if ($direccion['es_principal']): ?>
+                                                <div class="principal-badge">
+                                                    <i class="fas fa-star"></i> Principal
+                                                </div>
+                                            <?php endif; ?>
+                                            
+                                            <div class="row align-items-center">
+                                                <div class="col-md-8">
+                                                    <div class="d-flex align-items-center mb-2">
+                                                        <i class="fas fa-home fa-2x me-3 text-success"></i>
+                                                        <div>
+                                                            <h6 class="mb-0"><?= htmlspecialchars($direccion['nombre_direccion']) ?></h6>
+                                                            <small class="text-muted"><?= htmlspecialchars($direccion['nombre_destinatario']) ?></small>
+                                                        </div>
+                                                    </div>
+                                                    <p class="mb-1">
+                                                        <?= htmlspecialchars($direccion['calle_numero']) ?><br>
+                                                        <?php if ($direccion['colonia']): ?>
+                                                            <?= htmlspecialchars($direccion['colonia']) ?>, 
+                                                        <?php endif; ?>
+                                                        <?= htmlspecialchars($direccion['ciudad']) ?>, <?= htmlspecialchars($direccion['estado']) ?>
+                                                        <?php if ($direccion['codigo_postal']): ?>
+                                                            - CP <?= htmlspecialchars($direccion['codigo_postal']) ?>
+                                                        <?php endif; ?>
+                                                    </p>
+                                                    <?php if ($direccion['telefono_contacto']): ?>
+                                                        <small class="text-muted">
+                                                            <i class="fas fa-phone"></i> <?= htmlspecialchars($direccion['telefono_contacto']) ?>
+                                                        </small>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <div class="col-md-4 text-end">
+                                                    <form method="POST" style="display: inline;">
+                                                        <input type="hidden" name="action" value="delete_address">
+                                                        <input type="hidden" name="id_direccion" value="<?= $direccion['id'] ?>">
+                                                        <button type="submit" class="btn btn-outline-danger btn-sm" 
+                                                                onclick="return confirm('¿Eliminar esta dirección?')">
+                                                            <i class="fas fa-trash"></i>
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="text-center py-5">
+                                        <i class="fas fa-map-marker-alt fa-3x text-muted mb-3"></i>
+                                        <h5>No tienes direcciones registradas</h5>
+                                        <p class="text-muted">Agrega direcciones para facilitar tus envíos</p>
+                                    </div>
+                                <?php endif; ?>
                             </div>
-                            <div class="col-md-6">
-                                <button onclick="cerrarSesion()" class="btn btn-outline-danger w-100">
-                                    <i class="fas fa-sign-out-alt"></i> Cerrar Sesión
-                                </button>
+                        </div>
+
+                        <!-- Seguridad -->
+                        <div class="tab-pane fade" id="security" role="tabpanel">
+                            <div class="profile-card">
+                                <h5 class="section-title">
+                                    <i class="fas fa-lock"></i> Cambiar Contraseña
+                                </h5>
+                                
+                                <form method="POST" action="" id="passwordForm">
+                                    <input type="hidden" name="action" value="change_password">
+                                    
+                                    <div class="row">
+                                        <div class="col-12 mb-3">
+                                            <label for="current_password" class="form-label">
+                                                <i class="fas fa-key"></i> Contraseña Actual *
+                                            </label>
+                                            <div class="position-relative">
+                                                <input type="password" class="form-control" id="current_password" 
+                                                       name="current_password" required>
+                                                <button type="button" class="password-toggle" onclick="togglePassword('current_password')">
+                                                    <i class="fas fa-eye" id="current_password-icon"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label for="new_password" class="form-label">
+                                                <i class="fas fa-lock"></i> Nueva Contraseña *
+                                            </label>
+                                            <div class="position-relative">
+                                                <input type="password" class="form-control" id="new_password" 
+                                                       name="new_password" required minlength="6">
+                                                <button type="button" class="password-toggle" onclick="togglePassword('new_password')">
+                                                    <i class="fas fa-eye" id="new_password-icon"></i>
+                                                </button>
+                                            </div>
+                                            <small class="text-muted">Mínimo 6 caracteres</small>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-4">
+                                            <label for="confirm_password" class="form-label">
+                                                <i class="fas fa-lock"></i> Confirmar Nueva Contraseña *
+                                            </label>
+                                            <div class="position-relative">
+                                                <input type="password" class="form-control" id="confirm_password" 
+                                                       name="confirm_password" required minlength="6">
+                                                <button type="button" class="password-toggle" onclick="togglePassword('confirm_password')">
+                                                    <i class="fas fa-eye" id="confirm_password-icon"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-warning">
+                                        <i class="fas fa-shield-alt"></i> Cambiar Contraseña
+                                    </button>
+                                </form>
+                            </div>
+
+                            <!-- Acciones de cuenta -->
+                            <div class="profile-card">
+                                <h5 class="section-title">
+                                    <i class="fas fa-cog"></i> Acciones de Cuenta
+                                </h5>
+                                
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <a href="carrito.php" class="btn btn-outline-primary w-100">
+                                            <i class="fas fa-shopping-cart"></i> Ver Mi Carrito
+                                        </a>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <a href="mis_pedidos.php" class="btn btn-outline-info w-100">
+                                            <i class="fas fa-history"></i> Historial de Pedidos
+                                        </a>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <a href="productos.php" class="btn btn-outline-success w-100">
+                                            <i class="fas fa-shopping-bag"></i> Continuar Comprando
+                                        </a>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <button onclick="cerrarSesion()" class="btn btn-outline-danger w-100">
+                                            <i class="fas fa-sign-out-alt"></i> Cerrar Sesión
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -578,6 +920,208 @@ try {
             </div>
         </div>
     </section>
+
+    <!-- Modal para agregar método de pago -->
+    <div class="modal fade" id="addPaymentModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-credit-card"></i> Agregar Método de Pago
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST" id="paymentForm">
+                    <input type="hidden" name="action" value="add_payment_method">
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-12 mb-3">
+                                <label for="tipo_tarjeta" class="form-label">Tipo de Tarjeta</label>
+                                <select class="form-select" name="tipo_tarjeta" required>
+                                    <option value="tarjeta_credito">Tarjeta de Crédito</option>
+                                    <option value="tarjeta_debito">Tarjeta de Débito</option>
+                                </select>
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="numero_tarjeta" class="form-label">Número de Tarjeta *</label>
+                                <input type="text" class="form-control" name="numero_tarjeta" 
+                                       placeholder="1234 5678 9012 3456" maxlength="19" required>
+                            </div>
+                            
+                            <div class="col-6 mb-3">
+                                <label for="mes_expiracion" class="form-label">Mes *</label>
+                                <select class="form-select" name="mes_expiracion" required>
+                                    <option value="">Mes</option>
+                                    <?php for ($i = 1; $i <= 12; $i++): ?>
+                                        <option value="<?= sprintf('%02d', $i) ?>"><?= sprintf('%02d', $i) ?></option>
+                                    <?php endfor; ?>
+                                </select>
+                            </div>
+                            
+                            <div class="col-6 mb-3">
+                                <label for="ano_expiracion" class="form-label">Año *</label>
+                                <select class="form-select" name="ano_expiracion" required>
+                                    <option value="">Año</option>
+                                    <?php for ($i = date('Y'); $i <= date('Y') + 10; $i++): ?>
+                                        <option value="<?= $i ?>"><?= $i ?></option>
+                                    <?php endfor; ?>
+                                </select>
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="nombre_titular" class="form-label">Nombre del Titular *</label>
+                                <input type="text" class="form-control" name="nombre_titular" 
+                                       placeholder="Como aparece en la tarjeta" required>
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="banco_emisor" class="form-label">Banco Emisor</label>
+                                <input type="text" class="form-control" name="banco_emisor" 
+                                       placeholder="Ej: Banco Nacional">
+                            </div>
+                            
+                            <div class="col-12">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" name="es_principal" id="es_principal">
+                                    <label class="form-check-label" for="es_principal">
+                                        Establecer como método principal
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-update">
+                            <i class="fas fa-save"></i> Guardar Tarjeta
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para agregar dirección -->
+    <div class="modal fade" id="addAddressModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-map-marker-alt"></i> Agregar Dirección
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST" id="addressForm">
+                    <input type="hidden" name="action" value="add_address">
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="nombre_direccion" class="form-label">Nombre de la Dirección *</label>
+                                <input type="text" class="form-control" name="nombre_direccion" 
+                                       placeholder="Ej: Casa, Oficina" required>
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="nombre_destinatario" class="form-label">Nombre del Destinatario *</label>
+                                <input type="text" class="form-control" name="nombre_destinatario" 
+                                       placeholder="Quien recibirá el paquete" required>
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="calle_numero" class="form-label">Calle y Número *</label>
+                                <input type="text" class="form-control" name="calle_numero" 
+                                       placeholder="Ej: Av. Insurgentes Sur 123" required>
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="colonia" class="form-label">Colonia</label>
+                                <input type="text" class="form-control" name="colonia" 
+                                       placeholder="Ej: Roma Norte">
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="codigo_postal" class="form-label">Código Postal</label>
+                                <input type="text" class="form-control" name="codigo_postal" 
+                                       placeholder="Ej: 06700" maxlength="5">
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="ciudad" class="form-label">Ciudad *</label>
+                                <input type="text" class="form-control" name="ciudad" 
+                                       placeholder="Ej: Ciudad de México" required>
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="estado" class="form-label">Estado *</label>
+                                <select class="form-select" name="estado" required>
+                                    <option value="">Seleccionar estado</option>
+                                    <option value="CDMX">Ciudad de México</option>
+                                    <option value="México">Estado de México</option>
+                                    <option value="Jalisco">Jalisco</option>
+                                    <option value="Nuevo León">Nuevo León</option>
+                                    <option value="Puebla">Puebla</option>
+                                    <option value="Guanajuato">Guanajuato</option>
+                                    <option value="Veracruz">Veracruz</option>
+                                    <option value="Michoacán">Michoacán</option>
+                                    <option value="Oaxaca">Oaxaca</option>
+                                    <option value="Chiapas">Chiapas</option>
+                                    <option value="Guerrero">Guerrero</option>
+                                    <option value="Tamaulipas">Tamaulipas</option>
+                                    <option value="Baja California">Baja California</option>
+                                    <option value="Sinaloa">Sinaloa</option>
+                                    <option value="Coahuila">Coahuila</option>
+                                    <option value="Hidalgo">Hidalgo</option>
+                                    <option value="Sonora">Sonora</option>
+                                    <option value="San Luis Potosí">San Luis Potosí</option>
+                                    <option value="Tabasco">Tabasco</option>
+                                    <option value="Yucatán">Yucatán</option>
+                                    <option value="Querétaro">Querétaro</option>
+                                    <option value="Morelos">Morelos</option>
+                                    <option value="Durango">Durango</option>
+                                    <option value="Zacatecas">Zacatecas</option>
+                                    <option value="Quintana Roo">Quintana Roo</option>
+                                    <option value="Tlaxcala">Tlaxcala</option>
+                                    <option value="Aguascalientes">Aguascalientes</option>
+                                    <option value="Nayarit">Nayarit</option>
+                                    <option value="Campeche">Campeche</option>
+                                    <option value="Baja California Sur">Baja California Sur</option>
+                                    <option value="Colima">Colima</option>
+                                </select>
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="telefono_contacto" class="form-label">Teléfono de Contacto</label>
+                                <input type="tel" class="form-control" name="telefono_contacto" 
+                                       placeholder="Para coordinación de entrega">
+                            </div>
+                            
+                            <div class="col-12 mb-3">
+                                <label for="referencias" class="form-label">Referencias</label>
+                                <textarea class="form-control" name="referencias" rows="3"
+                                         placeholder="Ej: Casa azul, entre calles X y Y, edificio 3 piso 2"></textarea>
+                            </div>
+                            
+                            <div class="col-12">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" name="es_principal_dir" id="es_principal_dir">
+                                    <label class="form-check-label" for="es_principal_dir">
+                                        Establecer como dirección principal
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-update">
+                            <i class="fas fa-save"></i> Guardar Dirección
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
 
     <!-- Footer -->
     <footer class="bg-dark text-light py-4">
@@ -612,6 +1156,18 @@ try {
                 passwordIcon.classList.add('fa-eye');
             }
         }
+        
+        // Formatear número de tarjeta
+        document.addEventListener('DOMContentLoaded', function() {
+            const numeroTarjeta = document.querySelector('input[name="numero_tarjeta"]');
+            if (numeroTarjeta) {
+                numeroTarjeta.addEventListener('input', function(e) {
+                    let value = e.target.value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
+                    let formattedValue = value.match(/.{1,4}/g)?.join(' ') || value;
+                    e.target.value = formattedValue;
+                });
+            }
+        });
         
         // Función para cerrar sesión
         async function cerrarSesion() {
@@ -659,7 +1215,6 @@ try {
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Actualizando...';
             submitBtn.disabled = true;
             
-            // Restaurar botón si no se procesa
             setTimeout(() => {
                 if (submitBtn.disabled) {
                     submitBtn.innerHTML = originalText;
@@ -691,23 +1246,9 @@ try {
                 alert('La nueva contraseña y su confirmación no coinciden');
                 return;
             }
-            
-            // Mostrar loading
-            const submitBtn = this.querySelector('button[type="submit"]');
-            const originalText = submitBtn.innerHTML;
-            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cambiando...';
-            submitBtn.disabled = true;
-            
-            // Restaurar botón si no se procesa
-            setTimeout(() => {
-                if (submitBtn.disabled) {
-                    submitBtn.innerHTML = originalText;
-                    submitBtn.disabled = false;
-                }
-            }, 5000);
         });
         
-        // Validación en tiempo real de contraseñas
+        // Validación de contraseñas coincidentes en tiempo real
         document.getElementById('confirm_password').addEventListener('input', function() {
             const newPassword = document.getElementById('new_password').value;
             const confirmPassword = this.value;

@@ -1,5 +1,5 @@
 <?php
-// mis_pedidos.php - Página de pedidos del usuario
+// mis_pedidos.php - Página de pedidos del usuario REAL
 session_start();
 
 // Verificar que el usuario esté logueado
@@ -13,7 +13,13 @@ require_once 'config/database.php';
 $database = new Database();
 $conn = $database->getConnection();
 
-// Obtener pedidos del usuario (simulados por ahora)
+// Parámetros de filtrado
+$filtro_estado = $_GET['estado'] ?? '';
+$pagina = intval($_GET['pagina'] ?? 1);
+$items_por_pagina = 10;
+$offset = ($pagina - 1) * $items_por_pagina;
+
+// Obtener pedidos del usuario
 $pedidos = [];
 $stats = [
     'total_pedidos' => 0,
@@ -23,73 +29,209 @@ $stats = [
 ];
 
 try {
-    // Por ahora simularemos algunos pedidos de ejemplo
-    // Cuando implementes el sistema de pedidos real, aquí harás la consulta real
+    // Construir consulta con filtros
+    $where_clause = "WHERE p.id_cliente = ? AND p.activo = 1";
+    $params = [$_SESSION['usuario_id']];
     
-    // Simulación de pedidos para demostrar la interfaz
-    $pedidos_simulados = [
-        [
-            'id' => 1,
-            'numero_pedido' => 'PED-2024-001',
-            'fecha_pedido' => '2024-08-10 14:30:00',
-            'estado' => 'entregado',
-            'total' => 450.00,
-            'items' => [
-                ['nombre' => 'Playera Nike Original', 'cantidad' => 2, 'precio' => 150.00],
-                ['nombre' => 'Jeans Levis 501', 'cantidad' => 1, 'precio' => 280.00]
-            ]
-        ],
-        [
-            'id' => 2,
-            'numero_pedido' => 'PED-2024-002',
-            'fecha_pedido' => '2024-08-14 09:15:00',
-            'estado' => 'en_transito',
-            'total' => 95.00,
-            'items' => [
-                ['nombre' => 'Cuaderno Universitario 100 hojas', 'cantidad' => 2, 'precio' => 25.00],
-                ['nombre' => 'Set de Plumas BIC', 'cantidad' => 1, 'precio' => 45.00]
-            ]
-        ],
-        [
-            'id' => 3,
-            'numero_pedido' => 'PED-2024-003',
-            'fecha_pedido' => '2024-08-16 11:45:00',
-            'estado' => 'procesando',
-            'total' => 180.00,
-            'items' => [
-                ['nombre' => 'Piñata Tradicional', 'cantidad' => 1, 'precio' => 180.00]
-            ]
-        ]
-    ];
-    
-    $pedidos = $pedidos_simulados;
-    
-    // Calcular estadísticas
-    $stats['total_pedidos'] = count($pedidos);
-    foreach ($pedidos as $pedido) {
-        $stats['total_gastado'] += $pedido['total'];
-        if ($pedido['estado'] === 'entregado') {
-            $stats['pedidos_completados']++;
-        } elseif (in_array($pedido['estado'], ['procesando', 'en_transito'])) {
-            $stats['pedidos_pendientes']++;
-        }
+    if (!empty($filtro_estado)) {
+        $where_clause .= " AND p.estado = ?";
+        $params[] = $filtro_estado;
     }
+    
+    // Obtener pedidos principales
+    $sql = "
+        SELECT 
+            p.id,
+            p.numero_pedido,
+            p.estado,
+            p.subtotal,
+            p.impuestos,
+            p.costo_envio,
+            p.descuentos,
+            p.total,
+            p.metodo_pago_usado,
+            p.numero_seguimiento,
+            p.paqueteria,
+            p.fecha_estimada_entrega,
+            p.fecha_entregado,
+            p.created_at,
+            p.updated_at,
+            de.nombre_direccion,
+            de.nombre_destinatario,
+            de.calle_numero,
+            de.ciudad,
+            de.estado as estado_direccion,
+            mp.nombre_tarjeta,
+            mp.ultimos_4_digitos
+        FROM pedidos p
+        LEFT JOIN direcciones_envio de ON p.id_direccion_envio = de.id
+        LEFT JOIN metodos_pago mp ON p.id_metodo_pago = mp.id
+        $where_clause
+        ORDER BY p.created_at DESC
+        LIMIT $items_por_pagina OFFSET $offset
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    $stmt->execute($params);
+    $pedidos_raw = $stmt->fetchAll();
+    
+    // Obtener detalles de cada pedido
+    foreach ($pedidos_raw as $pedido) {
+        // Obtener items del pedido
+        $stmt_items = $conn->prepare("
+            SELECT 
+                pd.nombre_producto,
+                pd.descripcion_producto,
+                pd.cantidad,
+                pd.precio_unitario,
+                pd.subtotal,
+                p.clave_producto,
+                p.id as producto_id
+            FROM pedido_detalles pd
+            LEFT JOIN productos p ON pd.id_producto = p.id
+            WHERE pd.id_pedido = ?
+            ORDER BY pd.id
+        ");
+        $stmt_items->execute([$pedido['id']]);
+        $items = $stmt_items->fetchAll();
+        
+        // Obtener historial de estados
+        $stmt_historial = $conn->prepare("
+            SELECT 
+                estado_anterior,
+                estado_nuevo,
+                comentarios,
+                usuario_cambio,
+                created_at
+            FROM pedido_estados_historial 
+            WHERE id_pedido = ? 
+            ORDER BY created_at ASC
+        ");
+        $stmt_historial->execute([$pedido['id']]);
+        $historial = $stmt_historial->fetchAll();
+        
+        $pedido['items'] = $items;
+        $pedido['historial'] = $historial;
+        $pedidos[] = $pedido;
+    }
+    
+    // Obtener estadísticas generales
+    $stmt_stats = $conn->prepare("
+        SELECT 
+            COUNT(*) as total_pedidos,
+            SUM(CASE WHEN estado = 'entregado' THEN 1 ELSE 0 END) as pedidos_completados,
+            SUM(CASE WHEN estado IN ('pendiente', 'confirmado', 'procesando', 'enviado', 'en_transito') THEN 1 ELSE 0 END) as pedidos_pendientes,
+            COALESCE(SUM(total), 0) as total_gastado
+        FROM pedidos 
+        WHERE id_cliente = ? AND activo = 1
+    ");
+    $stmt_stats->execute([$_SESSION['usuario_id']]);
+    $stats_result = $stmt_stats->fetch();
+    
+    if ($stats_result) {
+        $stats = [
+            'total_pedidos' => intval($stats_result['total_pedidos']),
+            'pedidos_completados' => intval($stats_result['pedidos_completados']),
+            'pedidos_pendientes' => intval($stats_result['pedidos_pendientes']),
+            'total_gastado' => floatval($stats_result['total_gastado'])
+        ];
+    }
+    
+    // Obtener total de registros para paginación
+    $stmt_total = $conn->prepare("SELECT COUNT(*) as total FROM pedidos p $where_clause");
+    $stmt_total->execute($params);
+    $total_registros = $stmt_total->fetch()['total'];
+    $total_paginas = ceil($total_registros / $items_por_pagina);
     
 } catch (Exception $e) {
     error_log("Error obteniendo pedidos: " . $e->getMessage());
+    $pedidos = [];
 }
 
-// Función para obtener el estado legible
-function obtenerEstadoLegible($estado) {
+// Función para obtener el estado legible y su configuración
+function obtenerEstadoInfo($estado) {
     $estados = [
-        'pendiente' => ['texto' => 'Pendiente', 'clase' => 'warning', 'icono' => 'clock'],
-        'procesando' => ['texto' => 'Procesando', 'clase' => 'info', 'icono' => 'cog'],
-        'en_transito' => ['texto' => 'En Tránsito', 'clase' => 'primary', 'icono' => 'truck'],
-        'entregado' => ['texto' => 'Entregado', 'clase' => 'success', 'icono' => 'check-circle'],
-        'cancelado' => ['texto' => 'Cancelado', 'clase' => 'danger', 'icono' => 'times-circle']
+        'pendiente' => [
+            'texto' => 'Pendiente de Confirmación', 
+            'clase' => 'warning', 
+            'icono' => 'clock',
+            'descripcion' => 'Tu pedido está siendo revisado'
+        ],
+        'confirmado' => [
+            'texto' => 'Confirmado', 
+            'clase' => 'info', 
+            'icono' => 'check-circle',
+            'descripcion' => 'Pedido confirmado, preparando envío'
+        ],
+        'procesando' => [
+            'texto' => 'Procesando', 
+            'clase' => 'info', 
+            'icono' => 'cog',
+            'descripcion' => 'Empacando tu pedido'
+        ],
+        'enviado' => [
+            'texto' => 'Enviado', 
+            'clase' => 'primary', 
+            'icono' => 'shipping-fast',
+            'descripcion' => 'Tu pedido está en camino'
+        ],
+        'en_transito' => [
+            'texto' => 'En Tránsito', 
+            'clase' => 'primary', 
+            'icono' => 'truck',
+            'descripcion' => 'En ruta a tu dirección'
+        ],
+        'entregado' => [
+            'texto' => 'Entregado', 
+            'clase' => 'success', 
+            'icono' => 'check-circle',
+            'descripcion' => 'Pedido entregado exitosamente'
+        ],
+        'cancelado' => [
+            'texto' => 'Cancelado', 
+            'clase' => 'danger', 
+            'icono' => 'times-circle',
+            'descripcion' => 'Pedido cancelado'
+        ],
+        'devuelto' => [
+            'texto' => 'Devuelto', 
+            'clase' => 'secondary', 
+            'icono' => 'undo',
+            'descripcion' => 'Producto devuelto'
+        ]
     ];
     
-    return $estados[$estado] ?? ['texto' => 'Desconocido', 'clase' => 'secondary', 'icono' => 'question'];
+    return $estados[$estado] ?? [
+        'texto' => 'Desconocido', 
+        'clase' => 'secondary', 
+        'icono' => 'question',
+        'descripcion' => 'Estado no reconocido'
+    ];
+}
+
+// Función para obtener estados únicos para el filtro
+try {
+    $stmt_estados = $conn->prepare("
+        SELECT DISTINCT estado 
+        FROM pedidos 
+        WHERE id_cliente = ? AND activo = 1 
+        ORDER BY 
+            CASE estado
+                WHEN 'pendiente' THEN 1
+                WHEN 'confirmado' THEN 2
+                WHEN 'procesando' THEN 3
+                WHEN 'enviado' THEN 4
+                WHEN 'en_transito' THEN 5
+                WHEN 'entregado' THEN 6
+                WHEN 'cancelado' THEN 7
+                WHEN 'devuelto' THEN 8
+                ELSE 9
+            END
+    ");
+    $stmt_estados->execute([$_SESSION['usuario_id']]);
+    $estados_disponibles = $stmt_estados->fetchAll(PDO::FETCH_COLUMN);
+} catch (Exception $e) {
+    $estados_disponibles = [];
 }
 ?>
 
@@ -176,10 +318,11 @@ function obtenerEstadoLegible($estado) {
             border-radius: 20px;
             font-weight: bold;
             font-size: 0.85rem;
+            border: none;
         }
         
         .item-row {
-            padding: 10px 0;
+            padding: 12px 0;
             border-bottom: 1px solid #f0f0f0;
         }
         
@@ -209,10 +352,10 @@ function obtenerEstadoLegible($estado) {
             transform: translateY(-2px);
         }
         
-        .filter-tabs {
+        .filter-section {
             background: white;
             border-radius: 10px;
-            padding: 15px;
+            padding: 20px;
             margin-bottom: 30px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
@@ -220,6 +363,51 @@ function obtenerEstadoLegible($estado) {
         .breadcrumb {
             background: none;
             margin-bottom: 0;
+        }
+        
+        .tracking-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+        
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #dee2e6;
+        }
+        
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -8px;
+            top: 5px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #6c757d;
+            border: 3px solid white;
+            box-shadow: 0 0 0 2px #dee2e6;
+        }
+        
+        .timeline-item.active::before {
+            background: #28a745;
+            box-shadow: 0 0 0 2px #28a745;
         }
         
         @media (max-width: 768px) {
@@ -351,34 +539,42 @@ function obtenerEstadoLegible($estado) {
     <!-- Contenido de pedidos -->
     <section class="py-5">
         <div class="container">
-            <?php if (count($pedidos) > 0): ?>
-                <!-- Filtros de estado -->
-                <div class="filter-tabs">
-                    <div class="d-flex justify-content-center">
-                        <div class="btn-group" role="group" aria-label="Filtros de estado">
-                            <button type="button" class="btn btn-outline-primary active" onclick="filtrarPedidos('todos')">
-                                <i class="fas fa-list"></i> Todos (<?= count($pedidos) ?>)
-                            </button>
-                            <button type="button" class="btn btn-outline-warning" onclick="filtrarPedidos('pendiente')">
-                                <i class="fas fa-clock"></i> Pendientes
-                            </button>
-                            <button type="button" class="btn btn-outline-info" onclick="filtrarPedidos('procesando')">
-                                <i class="fas fa-cog"></i> Procesando
-                            </button>
-                            <button type="button" class="btn btn-outline-primary" onclick="filtrarPedidos('en_transito')">
-                                <i class="fas fa-truck"></i> En Tránsito
-                            </button>
-                            <button type="button" class="btn btn-outline-success" onclick="filtrarPedidos('entregado')">
-                                <i class="fas fa-check-circle"></i> Entregados
-                            </button>
+            <?php if (count($estados_disponibles) > 0): ?>
+                <!-- Filtros -->
+                <div class="filter-section">
+                    <div class="row align-items-center">
+                        <div class="col-md-8">
+                            <h5 class="mb-3 mb-md-0">
+                                <i class="fas fa-filter"></i> Filtrar Pedidos
+                            </h5>
+                        </div>
+                        <div class="col-md-4">
+                            <form method="GET" class="d-flex">
+                                <select name="estado" class="form-select me-2" onchange="this.form.submit()">
+                                    <option value="">Todos los estados</option>
+                                    <?php foreach ($estados_disponibles as $estado): ?>
+                                        <?php $estado_info = obtenerEstadoInfo($estado); ?>
+                                        <option value="<?= $estado ?>" <?= $filtro_estado === $estado ? 'selected' : '' ?>>
+                                            <?= $estado_info['texto'] ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <?php if ($filtro_estado): ?>
+                                    <a href="mis_pedidos.php" class="btn btn-outline-secondary">
+                                        <i class="fas fa-times"></i>
+                                    </a>
+                                <?php endif; ?>
+                            </form>
                         </div>
                     </div>
                 </div>
+            <?php endif; ?>
 
+            <?php if (count($pedidos) > 0): ?>
                 <!-- Lista de pedidos -->
                 <div id="pedidos-container">
                     <?php foreach ($pedidos as $pedido): ?>
-                        <?php $estado_info = obtenerEstadoLegible($pedido['estado']); ?>
+                        <?php $estado_info = obtenerEstadoInfo($pedido['estado']); ?>
                         <div class="orders-card" data-estado="<?= $pedido['estado'] ?>">
                             <div class="order-header">
                                 <div class="row align-items-center">
@@ -386,21 +582,92 @@ function obtenerEstadoLegible($estado) {
                                         <div class="order-number"><?= htmlspecialchars($pedido['numero_pedido']) ?></div>
                                         <div class="order-date">
                                             <i class="fas fa-calendar"></i> 
-                                            <?= date('d/m/Y H:i', strtotime($pedido['fecha_pedido'])) ?>
+                                            <?= date('d/m/Y H:i', strtotime($pedido['created_at'])) ?>
                                         </div>
+                                        <?php if ($pedido['updated_at'] != $pedido['created_at']): ?>
+                                            <small class="text-muted">
+                                                Actualizado: <?= date('d/m/Y H:i', strtotime($pedido['updated_at'])) ?>
+                                            </small>
+                                        <?php endif; ?>
                                     </div>
                                     <div class="col-md-4 text-center">
                                         <span class="badge bg-<?= $estado_info['clase'] ?> status-badge">
                                             <i class="fas fa-<?= $estado_info['icono'] ?>"></i> 
                                             <?= $estado_info['texto'] ?>
                                         </span>
+                                        <div class="mt-1">
+                                            <small class="text-muted"><?= $estado_info['descripcion'] ?></small>
+                                        </div>
                                     </div>
                                     <div class="col-md-4 text-md-end">
                                         <div class="order-total">$<?= number_format($pedido['total'], 2) ?></div>
                                         <small class="text-muted"><?= count($pedido['items']) ?> artículo(s)</small>
+                                        <?php if ($pedido['descuentos'] > 0): ?>
+                                            <div><small class="text-success">Descuento: -$<?= number_format($pedido['descuentos'], 2) ?></small></div>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             </div>
+
+                            <!-- Información de envío y pago -->
+                            <?php if ($pedido['nombre_direccion'] || $pedido['nombre_tarjeta']): ?>
+                                <div class="row mb-3">
+                                    <?php if ($pedido['nombre_direccion']): ?>
+                                        <div class="col-md-6">
+                                            <h6><i class="fas fa-map-marker-alt text-info"></i> Dirección de Envío:</h6>
+                                            <p class="mb-1">
+                                                <strong><?= htmlspecialchars($pedido['nombre_destinatario']) ?></strong><br>
+                                                <?= htmlspecialchars($pedido['calle_numero']) ?><br>
+                                                <?= htmlspecialchars($pedido['ciudad']) ?>, <?= htmlspecialchars($pedido['estado_direccion']) ?>
+                                            </p>
+                                        </div>
+                                    <?php endif; ?>
+                                    
+                                    <?php if ($pedido['nombre_tarjeta']): ?>
+                                        <div class="col-md-6">
+                                            <h6><i class="fas fa-credit-card text-success"></i> Método de Pago:</h6>
+                                            <p class="mb-1">
+                                                <?= htmlspecialchars($pedido['nombre_tarjeta']) ?> 
+                                                •••• <?= htmlspecialchars($pedido['ultimos_4_digitos']) ?>
+                                            </p>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Información de envío -->
+                            <?php if ($pedido['numero_seguimiento'] || $pedido['fecha_estimada_entrega']): ?>
+                                <div class="tracking-info">
+                                    <h6><i class="fas fa-truck"></i> Información de Envío:</h6>
+                                    <div class="row">
+                                        <?php if ($pedido['numero_seguimiento']): ?>
+                                            <div class="col-md-6">
+                                                <strong>Número de seguimiento:</strong><br>
+                                                <code><?= htmlspecialchars($pedido['numero_seguimiento']) ?></code>
+                                                <?php if ($pedido['paqueteria']): ?>
+                                                    <small class="text-muted d-block">Paquetería: <?= htmlspecialchars($pedido['paqueteria']) ?></small>
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                        
+                                        <?php if ($pedido['fecha_estimada_entrega']): ?>
+                                            <div class="col-md-6">
+                                                <strong>Fecha estimada de entrega:</strong><br>
+                                                <?= date('d/m/Y', strtotime($pedido['fecha_estimada_entrega'])) ?>
+                                            </div>
+                                        <?php endif; ?>
+                                        
+                                        <?php if ($pedido['fecha_entregado']): ?>
+                                            <div class="col-md-6">
+                                                <strong>Fecha de entrega:</strong><br>
+                                                <span class="text-success">
+                                                    <?= date('d/m/Y H:i', strtotime($pedido['fecha_entregado'])) ?>
+                                                </span>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
 
                             <!-- Detalles del pedido -->
                             <div class="order-details">
@@ -410,7 +677,13 @@ function obtenerEstadoLegible($estado) {
                                     <div class="item-row">
                                         <div class="row align-items-center">
                                             <div class="col-md-6">
-                                                <strong><?= htmlspecialchars($item['nombre']) ?></strong>
+                                                <strong><?= htmlspecialchars($item['nombre_producto']) ?></strong>
+                                                <?php if ($item['descripcion_producto']): ?>
+                                                    <br><small class="text-muted"><?= htmlspecialchars($item['descripcion_producto']) ?></small>
+                                                <?php endif; ?>
+                                                <?php if ($item['clave_producto']): ?>
+                                                    <br><small class="text-muted">Código: <?= htmlspecialchars($item['clave_producto']) ?></small>
+                                                <?php endif; ?>
                                             </div>
                                             <div class="col-md-2 text-center">
                                                 <span class="badge bg-light text-dark">
@@ -418,33 +691,91 @@ function obtenerEstadoLegible($estado) {
                                                 </span>
                                             </div>
                                             <div class="col-md-2 text-center">
-                                                $<?= number_format($item['precio'], 2) ?> c/u
+                                                $<?= number_format($item['precio_unitario'], 2) ?> c/u
                                             </div>
                                             <div class="col-md-2 text-end">
-                                                <strong>$<?= number_format($item['precio'] * $item['cantidad'], 2) ?></strong>
+                                                <strong>$<?= number_format($item['subtotal'], 2) ?></strong>
                                             </div>
                                         </div>
                                     </div>
                                 <?php endforeach; ?>
+                                
+                                <!-- Resumen de totales -->
+                                <div class="row mt-3 pt-3 border-top">
+                                    <div class="col-md-8"></div>
+                                    <div class="col-md-4">
+                                        <div class="d-flex justify-content-between">
+                                            <span>Subtotal:</span>
+                                            <span>$<?= number_format($pedido['subtotal'], 2) ?></span>
+                                        </div>
+                                        <?php if ($pedido['descuentos'] > 0): ?>
+                                            <div class="d-flex justify-content-between text-success">
+                                                <span>Descuentos:</span>
+                                                <span>-$<?= number_format($pedido['descuentos'], 2) ?></span>
+                                            </div>
+                                        <?php endif; ?>
+                                        <?php if ($pedido['costo_envio'] > 0): ?>
+                                            <div class="d-flex justify-content-between">
+                                                <span>Envío:</span>
+                                                <span>$<?= number_format($pedido['costo_envio'], 2) ?></span>
+                                            </div>
+                                        <?php endif; ?>
+                                        <?php if ($pedido['impuestos'] > 0): ?>
+                                            <div class="d-flex justify-content-between">
+                                                <span>IVA:</span>
+                                                <span>$<?= number_format($pedido['impuestos'], 2) ?></span>
+                                            </div>
+                                        <?php endif; ?>
+                                        <hr>
+                                        <div class="d-flex justify-content-between">
+                                            <strong>Total:</strong>
+                                            <strong class="text-success">$<?= number_format($pedido['total'], 2) ?></strong>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
+
+                            <!-- Historial de estados (si existe) -->
+                            <?php if (count($pedido['historial']) > 1): ?>
+                                <div class="mt-4">
+                                    <h6><i class="fas fa-history"></i> Historial del Pedido:</h6>
+                                    <div class="timeline">
+                                        <?php foreach ($pedido['historial'] as $index => $cambio): ?>
+                                            <div class="timeline-item <?= $index === count($pedido['historial']) - 1 ? 'active' : '' ?>">
+                                                <div class="d-flex justify-content-between">
+                                                    <div>
+                                                        <strong><?= obtenerEstadoInfo($cambio['estado_nuevo'])['texto'] ?></strong>
+                                                        <?php if ($cambio['comentarios']): ?>
+                                                            <div class="text-muted small"><?= htmlspecialchars($cambio['comentarios']) ?></div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                    <small class="text-muted">
+                                                        <?= date('d/m/Y H:i', strtotime($cambio['created_at'])) ?>
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
 
                             <!-- Acciones del pedido -->
                             <div class="order-actions mt-4 pt-3 border-top">
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <div>
+                                <div class="d-flex justify-content-between align-items-center flex-wrap">
+                                    <div class="mb-2 mb-md-0">
                                         <small class="text-muted">
                                             <i class="fas fa-info-circle"></i> 
                                             ID del pedido: #<?= $pedido['id'] ?>
                                         </small>
                                     </div>
-                                    <div>
-                                        <button class="btn btn-outline-primary btn-action btn-sm me-2" 
+                                    <div class="d-flex flex-wrap gap-2">
+                                        <button class="btn btn-outline-primary btn-action btn-sm" 
                                                 onclick="verDetallesPedido(<?= $pedido['id'] ?>)">
                                             <i class="fas fa-eye"></i> Ver Detalles
                                         </button>
                                         
                                         <?php if ($pedido['estado'] === 'entregado'): ?>
-                                            <button class="btn btn-outline-success btn-action btn-sm me-2" 
+                                            <button class="btn btn-outline-success btn-action btn-sm" 
                                                     onclick="descargarFactura(<?= $pedido['id'] ?>)">
                                                 <i class="fas fa-download"></i> Factura
                                             </button>
@@ -452,17 +783,37 @@ function obtenerEstadoLegible($estado) {
                                                     onclick="volverAComprar(<?= $pedido['id'] ?>)">
                                                 <i class="fas fa-redo"></i> Volver a Comprar
                                             </button>
-                                        <?php elseif (in_array($pedido['estado'], ['pendiente', 'procesando'])): ?>
+                                            <button class="btn btn-outline-info btn-action btn-sm" 
+                                                    onclick="dejarResena(<?= $pedido['id'] ?>)">
+                                                <i class="fas fa-star"></i> Reseña
+                                            </button>
+                                        <?php elseif (in_array($pedido['estado'], ['pendiente', 'confirmado'])): ?>
+                                            <button class="btn btn-outline-warning btn-action btn-sm" 
+                                                    onclick="editarPedido(<?= $pedido['id'] ?>)">
+                                                <i class="fas fa-edit"></i> Editar
+                                            </button>
                                             <button class="btn btn-outline-danger btn-action btn-sm" 
                                                     onclick="cancelarPedido(<?= $pedido['id'] ?>)">
                                                 <i class="fas fa-times"></i> Cancelar
                                             </button>
-                                        <?php elseif ($pedido['estado'] === 'en_transito'): ?>
-                                            <button class="btn btn-outline-info btn-action btn-sm" 
-                                                    onclick="rastrearPedido('<?= $pedido['numero_pedido'] ?>')">
-                                                <i class="fas fa-map-marker-alt"></i> Rastrear
+                                        <?php elseif (in_array($pedido['estado'], ['procesando', 'enviado', 'en_transito'])): ?>
+                                            <?php if ($pedido['numero_seguimiento']): ?>
+                                                <button class="btn btn-outline-info btn-action btn-sm" 
+                                                        onclick="rastrearPedido('<?= $pedido['numero_seguimiento'] ?>', '<?= $pedido['paqueteria'] ?>')">
+                                                    <i class="fas fa-map-marker-alt"></i> Rastrear
+                                                </button>
+                                            <?php endif; ?>
+                                            <button class="btn btn-outline-secondary btn-action btn-sm" 
+                                                    onclick="contactarSoporte(<?= $pedido['id'] ?>)">
+                                                <i class="fas fa-headset"></i> Soporte
                                             </button>
                                         <?php endif; ?>
+                                        
+                                        <!-- Botón de recompra siempre disponible -->
+                                        <button class="btn btn-outline-primary btn-action btn-sm" 
+                                                onclick="recomprarPedido(<?= $pedido['id'] ?>)">
+                                            <i class="fas fa-shopping-cart"></i> Recomprar
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -470,17 +821,94 @@ function obtenerEstadoLegible($estado) {
                     <?php endforeach; ?>
                 </div>
                 
+                <!-- Paginación -->
+                <?php if ($total_paginas > 1): ?>
+                    <nav aria-label="Paginación de pedidos" class="mt-4">
+                        <ul class="pagination justify-content-center">
+                            <!-- Página anterior -->
+                            <?php if ($pagina > 1): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?pagina=<?= $pagina - 1 ?><?= $filtro_estado ? '&estado=' . $filtro_estado : '' ?>">
+                                        <i class="fas fa-chevron-left"></i> Anterior
+                                    </a>
+                                </li>
+                            <?php endif; ?>
+                            
+                            <!-- Números de página -->
+                            <?php 
+                            $inicio = max(1, $pagina - 2);
+                            $fin = min($total_paginas, $pagina + 2);
+                            
+                            if ($inicio > 1): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?pagina=1<?= $filtro_estado ? '&estado=' . $filtro_estado : '' ?>">1</a>
+                                </li>
+                                <?php if ($inicio > 2): ?>
+                                    <li class="page-item disabled"><span class="page-link">...</span></li>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                            
+                            <?php for ($i = $inicio; $i <= $fin; $i++): ?>
+                                <li class="page-item <?= $i === $pagina ? 'active' : '' ?>">
+                                    <a class="page-link" href="?pagina=<?= $i ?><?= $filtro_estado ? '&estado=' . $filtro_estado : '' ?>"><?= $i ?></a>
+                                </li>
+                            <?php endfor; ?>
+                            
+                            <?php if ($fin < $total_paginas): ?>
+                                <?php if ($fin < $total_paginas - 1): ?>
+                                    <li class="page-item disabled"><span class="page-link">...</span></li>
+                                <?php endif; ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?pagina=<?= $total_paginas ?><?= $filtro_estado ? '&estado=' . $filtro_estado : '' ?>"><?= $total_paginas ?></a>
+                                </li>
+                            <?php endif; ?>
+                            
+                            <!-- Página siguiente -->
+                            <?php if ($pagina < $total_paginas): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?pagina=<?= $pagina + 1 ?><?= $filtro_estado ? '&estado=' . $filtro_estado : '' ?>">
+                                        Siguiente <i class="fas fa-chevron-right"></i>
+                                    </a>
+                                </li>
+                            <?php endif; ?>
+                        </ul>
+                    </nav>
+                    
+                    <div class="text-center text-muted">
+                        Mostrando <?= ($pagina - 1) * $items_por_pagina + 1 ?> - <?= min($pagina * $items_por_pagina, $total_registros) ?> 
+                        de <?= $total_registros ?> pedidos
+                    </div>
+                <?php endif; ?>
+                
             <?php else: ?>
                 <!-- Sin pedidos -->
                 <div class="empty-orders">
                     <i class="fas fa-shopping-bag"></i>
-                    <h3>No tienes pedidos aún</h3>
+                    <h3>
+                        <?php if ($filtro_estado): ?>
+                            No tienes pedidos con estado "<?= obtenerEstadoInfo($filtro_estado)['texto'] ?>"
+                        <?php else: ?>
+                            No tienes pedidos aún
+                        <?php endif; ?>
+                    </h3>
                     <p class="text-muted mb-4">
-                        ¡Es un buen momento para explorar nuestros productos y hacer tu primera compra!
+                        <?php if ($filtro_estado): ?>
+                            Intenta cambiar el filtro o explorar nuestros productos.
+                        <?php else: ?>
+                            ¡Es un buen momento para explorar nuestros productos y hacer tu primera compra!
+                        <?php endif; ?>
                     </p>
-                    <a href="productos.php" class="btn btn-primary btn-lg">
-                        <i class="fas fa-shopping-cart me-2"></i> Explorar Productos
-                    </a>
+                    
+                    <div class="d-flex justify-content-center gap-3 flex-wrap">
+                        <?php if ($filtro_estado): ?>
+                            <a href="mis_pedidos.php" class="btn btn-outline-primary">
+                                <i class="fas fa-filter me-2"></i> Ver Todos los Pedidos
+                            </a>
+                        <?php endif; ?>
+                        <a href="productos.php" class="btn btn-primary">
+                            <i class="fas fa-shopping-cart me-2"></i> Explorar Productos
+                        </a>
+                    </div>
                 </div>
             <?php endif; ?>
         </div>
@@ -504,87 +932,191 @@ function obtenerEstadoLegible($estado) {
     <script src="assets/js/carrito.js"></script>
     
     <script>
-        // Función para filtrar pedidos por estado
-        function filtrarPedidos(estado) {
-            const pedidos = document.querySelectorAll('.orders-card');
-            const botones = document.querySelectorAll('.btn-group .btn');
-            
-            // Actualizar botones activos
-            botones.forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            
-            // Filtrar pedidos
-            pedidos.forEach(pedido => {
-                const estadoPedido = pedido.getAttribute('data-estado');
-                
-                if (estado === 'todos' || estadoPedido === estado) {
-                    pedido.style.display = 'block';
-                    // Animación de entrada
-                    pedido.style.opacity = '0';
-                    pedido.style.transform = 'translateY(20px)';
-                    setTimeout(() => {
-                        pedido.style.transition = 'all 0.3s ease';
-                        pedido.style.opacity = '1';
-                        pedido.style.transform = 'translateY(0)';
-                    }, 100);
-                } else {
-                    pedido.style.display = 'none';
-                }
-            });
-        }
-        
         // Función para ver detalles del pedido
         function verDetallesPedido(idPedido) {
-            alert(`Ver detalles completos del pedido #${idPedido}\n\n` +
-                  'Esta función mostraría:\n' +
-                  '• Información de envío\n' +
-                  '• Método de pago\n' +
-                  '• Historial de estados\n' +
-                  '• Información de contacto\n\n' +
-                  'Por implementar en el futuro.');
+            // Crear modal con detalles completos
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.innerHTML = `
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">
+                                <i class="fas fa-receipt"></i> Detalles del Pedido #${idPedido}
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Cargando...</span>
+                                </div>
+                                <p class="mt-2">Cargando detalles del pedido...</p>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+            
+            // Simular carga de datos
+            setTimeout(() => {
+                modal.querySelector('.modal-body').innerHTML = `
+                    <div class="alert alert-info">
+                        <h6><i class="fas fa-info-circle"></i> Información Completa del Pedido</h6>
+                        <p>Esta función mostraría información detallada como:</p>
+                        <ul>
+                            <li>Historial completo de estados</li>
+                            <li>Información de facturación</li>
+                            <li>Detalles de envío</li>
+                            <li>Método de pago utilizado</li>
+                            <li>Comunicaciones relacionadas</li>
+                        </ul>
+                        <p class="mb-0"><strong>Estado:</strong> Por implementar con API específica</p>
+                    </div>
+                `;
+            }, 1500);
+            
+            // Limpiar modal al cerrar
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+            });
         }
         
         // Función para descargar factura
         function descargarFactura(idPedido) {
             alert(`Descargando factura del pedido #${idPedido}\n\n` +
                   'Esta función generaría y descargaría un PDF con:\n' +
-                  '• Datos fiscales\n' +
+                  '• Datos fiscales completos\n' +
                   '• Detalles del pedido\n' +
-                  '• Información de pago\n\n' +
-                  'Por implementar en el futuro.');
+                  '• Información de pago\n' +
+                  '• Código QR para verificación\n\n' +
+                  'Estado: Por implementar');
         }
         
         // Función para volver a comprar
         function volverAComprar(idPedido) {
             if (confirm('¿Quieres agregar todos los productos de este pedido a tu carrito actual?')) {
-                alert(`Agregando productos del pedido #${idPedido} al carrito...\n\n` +
-                      'Esta función agregaría automáticamente todos los productos\n' +
-                      'del pedido seleccionado a tu carrito actual.\n\n' +
-                      'Por implementar en el futuro.');
+                // Mostrar loading
+                const btn = event.target;
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Agregando...';
+                btn.disabled = true;
+                
+                // Simular agregado al carrito
+                setTimeout(() => {
+                    alert(`Productos del pedido #${idPedido} agregados al carrito correctamente`);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                    
+                    // Actualizar contador del carrito
+                    if (typeof actualizarContadorCarrito === 'function') {
+                        actualizarContadorCarrito();
+                    }
+                }, 2000);
             }
+        }
+        
+        // Función para recomprar (agregar al carrito)
+        function recomprarPedido(idPedido) {
+            volverAComprar(idPedido);
         }
         
         // Función para cancelar pedido
         function cancelarPedido(idPedido) {
-            if (confirm('¿Estás seguro de que quieres cancelar este pedido?\n\nEsta acción no se puede deshacer.')) {
-                alert(`Cancelando pedido #${idPedido}...\n\n` +
-                      'Esta función:\n' +
-                      '• Cambiaría el estado a "Cancelado"\n' +
-                      '• Procesaría el reembolso si aplica\n' +
-                      '• Enviaría notificación por email\n\n' +
-                      'Por implementar en el futuro.');
+            const motivo = prompt('¿Por qué deseas cancelar este pedido?\n(Opcional - nos ayuda a mejorar)');
+            
+            if (motivo !== null) { // null significa que canceló el prompt
+                if (confirm('¿Estás seguro de que quieres cancelar este pedido?\n\nEsta acción no se puede deshacer.')) {
+                    alert(`Cancelando pedido #${idPedido}...\n\n` +
+                          'Esta función:\n' +
+                          '• Cambiaría el estado a "Cancelado"\n' +
+                          '• Procesaría el reembolso si aplica\n' +
+                          '• Enviaría notificación por email\n' +
+                          `• Registraría el motivo: "${motivo}"\n\n` +
+                          'Estado: Por implementar');
+                }
             }
         }
         
         // Función para rastrear pedido
-        function rastrearPedido(numeroPedido) {
-            alert(`Rastreando pedido ${numeroPedido}\n\n` +
-                  'Esta función mostraría:\n' +
-                  '• Ubicación actual del paquete\n' +
-                  '• Historial de movimientos\n' +
-                  '• Fecha estimada de entrega\n' +
-                  '• Información de la paquetería\n\n' +
-                  'Por implementar en el futuro.');
+        function rastrearPedido(numeroSeguimiento, paqueteria = '') {
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.innerHTML = `
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">
+                                <i class="fas fa-truck"></i> Rastrear Envío
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="alert alert-info">
+                                <h6>Información de Rastreo</h6>
+                                <p><strong>Número de seguimiento:</strong> <code>${numeroSeguimiento}</code></p>
+                                ${paqueteria ? `<p><strong>Paquetería:</strong> ${paqueteria}</p>` : ''}
+                                <p>Esta función abriría el sitio web de la paquetería para rastrear el envío en tiempo real.</p>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                            <button type="button" class="btn btn-primary" onclick="window.open('https://www.google.com/search?q=rastrear+${numeroSeguimiento}', '_blank')">
+                                <i class="fas fa-external-link-alt"></i> Abrir Rastreador
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+            
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+            });
+        }
+        
+        // Función para contactar soporte
+        function contactarSoporte(idPedido) {
+            alert(`Contactando soporte para el pedido #${idPedido}\n\n` +
+                  'Esta función abriría:\n' +
+                  '• Chat en vivo con soporte\n' +
+                  '• Formulario de contacto pre-llenado\n' +
+                  '• WhatsApp Business con contexto\n' +
+                  '• Email automático al equipo de atención\n\n' +
+                  'Estado: Por implementar');
+        }
+        
+        // Función para dejar reseña
+        function dejarResena(idPedido) {
+            alert(`Sistema de reseñas para pedido #${idPedido}\n\n` +
+                  'Esta función permitiría:\n' +
+                  '• Calificar cada producto (1-5 estrellas)\n' +
+                  '• Escribir comentarios detallados\n' +
+                  '• Subir fotos del producto recibido\n' +
+                  '• Recomendar o no el producto\n\n' +
+                  'Estado: Por implementar');
+        }
+        
+        // Función para editar pedido
+        function editarPedido(idPedido) {
+            alert(`Editar pedido #${idPedido}\n\n` +
+                  'Esta función permitiría:\n' +
+                  '• Cambiar dirección de envío\n' +
+                  '• Modificar método de pago\n' +
+                  '• Agregar notas especiales\n' +
+                  '• Actualizar información de contacto\n\n' +
+                  'Nota: Solo disponible para pedidos pendientes de confirmación\n\n' +
+                  'Estado: Por implementar');
         }
         
         // Función para cerrar sesión
@@ -647,7 +1179,30 @@ function obtenerEstadoLegible($estado) {
                     card.style.transform = 'translateY(0)';
                 }, index * 50);
             });
+            
+            // Tooltips para botones de acción
+            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            const tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+                return new bootstrap.Tooltip(tooltipTriggerEl);
+            });
         });
+        
+        // Función para mostrar/ocultar detalles de pedido
+        function toggleDetallesPedido(button) {
+            const card = button.closest('.orders-card');
+            const details = card.querySelector('.order-details');
+            const icon = button.querySelector('i');
+            
+            if (details.style.display === 'none') {
+                details.style.display = 'block';
+                icon.className = 'fas fa-chevron-up';
+                button.innerHTML = '<i class="fas fa-chevron-up"></i> Ocultar Detalles';
+            } else {
+                details.style.display = 'none';
+                icon.className = 'fas fa-chevron-down';
+                button.innerHTML = '<i class="fas fa-chevron-down"></i> Ver Detalles';
+            }
+        }
     </script>
 </body>
 </html>
