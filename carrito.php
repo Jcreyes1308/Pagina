@@ -1,5 +1,5 @@
 <?php
-// carrito.php - Página del carrito de compras
+// carrito.php - Página del carrito de compras - CORREGIDA
 session_start();
 require_once 'config/database.php';
 
@@ -358,16 +358,38 @@ $conn = $database->getConnection();
             document.getElementById('total').textContent = `$${total.toFixed(2)}`;
         }
         
-        // Función para proceder al checkout
+        // Función para proceder al checkout - CORREGIDA
         function procederAlCheckout() {
             if (!carritoData || carritoData.items.length === 0) {
                 alert('Tu carrito está vacío');
                 return;
             }
             
-            // Por ahora solo mostrar alerta, después implementaremos checkout
-            alert('Función de checkout en desarrollo. Total: $' + (carritoData.total * 1.16).toFixed(2));
-            // TODO: Redirigir a checkout.php
+            // Verificar si el usuario está logueado
+            fetch('api/auth.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'action=check_session'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.data && data.data.logueado) {
+                    // Usuario logueado - redirigir a checkout
+                    window.location.href = 'checkout.php';
+                } else {
+                    // Usuario no logueado - preguntar si quiere loguearse
+                    if (confirm('Para proceder al checkout necesitas iniciar sesión.\n\n¿Quieres iniciar sesión ahora?')) {
+                        window.location.href = 'login.php?redirect=checkout.php';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error verificando sesión:', error);
+                // En caso de error, intentar ir a checkout de todas formas
+                window.location.href = 'checkout.php';
+            });
         }
         
         // Función para limpiar carrito
@@ -377,24 +399,22 @@ $conn = $database->getConnection();
             }
             
             try {
-                // Eliminar todos los items uno por uno
-                for (const item of carritoData.items) {
-                    const formData = new FormData();
-                    formData.append('action', 'eliminar');
-                    
-                    if (item.id_carrito) {
-                        formData.append('id_carrito', item.id_carrito);
-                    } else {
-                        formData.append('key', item.key);
-                    }
-                    
-                    await fetch('api/carrito.php', {
-                        method: 'POST',
-                        body: formData
-                    });
-                }
+                const formData = new FormData();
+                formData.append('action', 'limpiar');
                 
-                cargarCarrito(); // Recargar carrito
+                const response = await fetch('api/carrito.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    cargarCarrito(); // Recargar carrito
+                    alert('Carrito vaciado correctamente');
+                } else {
+                    alert('Error: ' + data.message);
+                }
                 
             } catch (error) {
                 console.error('Error:', error);
