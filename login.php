@@ -295,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                                 Recordarme
                                             </label>
                                         </div>
-                                        <a href="recuperar_password.php" class="text-decoration-none">
+                                        <a href="forgot-password.php" class="text-decoration-none">
                                             ¿Olvidaste tu contraseña?
                                         </a>
                                     </div>

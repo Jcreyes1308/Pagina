@@ -1,5 +1,5 @@
 <?php
-// config/verification.php - Sistema de Verificación COMPLETO - CORREGIDO
+// config/verification.php - Sistema de Verificación COMPLETO - ACTUALIZADO CON PASSWORD RESET
 class VerificationService {
     private $conn;
     
@@ -57,6 +57,48 @@ class VerificationService {
     }
     
     /**
+     * ✨ NUEVO: Enviar código de recuperación de contraseña por email
+     */
+    public function sendPasswordResetEmail($user_id, $email, $user_name = '') {
+        try {
+            // Generar código de 6 dígitos
+            $codigo = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
+            $expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
+            
+            // Guardar código en base de datos
+            $stmt = $this->conn->prepare("
+                INSERT INTO verification_codes (user_id, type, code, email, expires_at, created_at) 
+                VALUES (?, 'password_reset', ?, ?, ?, NOW())
+                ON DUPLICATE KEY UPDATE 
+                code = VALUES(code), 
+                expires_at = VALUES(expires_at), 
+                attempts = 0,
+                created_at = NOW()
+            ");
+            $stmt->execute([$user_id, $codigo, $email, $expires_at]);
+            
+            // Enviar email de recuperación
+            return $this->sendEmail($email, $codigo, 'password_reset', $user_name);
+            
+        } catch (Exception $e) {
+            error_log("Error enviando recuperación de contraseña: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * ✨ NUEVO: Enviar email de confirmación de reset exitoso
+     */
+    public function sendPasswordResetConfirmation($email, $user_name = '') {
+        try {
+            return $this->sendEmail($email, '', 'password_reset_confirmation', $user_name);
+        } catch (Exception $e) {
+            error_log("Error enviando confirmación de reset: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
      * Enviar código por SMS
      */
     public function sendSMSVerification($user_id, $phone) {
@@ -90,6 +132,39 @@ class VerificationService {
     }
     
     /**
+     * ✨ NUEVO: Enviar código de recuperación de contraseña por SMS
+     */
+    public function sendPasswordResetSMS($user_id, $phone) {
+        try {
+            // Limpiar número de teléfono
+            $phone = $this->cleanPhoneNumber($phone);
+            
+            // Generar código de 6 dígitos
+            $codigo = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
+            $expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
+            
+            // Guardar código en base de datos
+            $stmt = $this->conn->prepare("
+                INSERT INTO verification_codes (user_id, type, code, phone, expires_at, created_at) 
+                VALUES (?, 'password_reset', ?, ?, ?, NOW())
+                ON DUPLICATE KEY UPDATE 
+                code = VALUES(code), 
+                expires_at = VALUES(expires_at), 
+                attempts = 0,
+                created_at = NOW()
+            ");
+            $stmt->execute([$user_id, $codigo, $phone, $expires_at]);
+            
+            // Enviar SMS de recuperación
+            return $this->sendPasswordResetSMSMessage($phone, $codigo);
+            
+        } catch (Exception $e) {
+            error_log("Error enviando SMS de recuperación: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
      * Enviar código por WhatsApp
      */
     public function sendWhatsAppVerification($user_id, $phone) {
@@ -118,6 +193,39 @@ class VerificationService {
             
         } catch (Exception $e) {
             error_log("Error enviando WhatsApp: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * ✨ NUEVO: Enviar código de recuperación de contraseña por WhatsApp
+     */
+    public function sendPasswordResetWhatsApp($user_id, $phone) {
+        try {
+            // Limpiar número de teléfono
+            $phone = $this->cleanPhoneNumber($phone);
+            
+            // Generar código de 6 dígitos
+            $codigo = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
+            $expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
+            
+            // Guardar código en base de datos
+            $stmt = $this->conn->prepare("
+                INSERT INTO verification_codes (user_id, type, code, phone, expires_at, created_at) 
+                VALUES (?, 'password_reset', ?, ?, ?, NOW())
+                ON DUPLICATE KEY UPDATE 
+                code = VALUES(code), 
+                expires_at = VALUES(expires_at), 
+                attempts = 0,
+                created_at = NOW()
+            ");
+            $stmt->execute([$user_id, $codigo, $phone, $expires_at]);
+            
+            // Enviar WhatsApp de recuperación
+            return $this->sendPasswordResetWhatsAppMessage($phone, $codigo);
+            
+        } catch (Exception $e) {
+            error_log("Error enviando WhatsApp de recuperación: " . $e->getMessage());
             return false;
         }
     }
@@ -163,6 +271,7 @@ class VerificationService {
                 $stmt = $this->conn->prepare("UPDATE clientes SET phone_verified = 1 WHERE id = ?");
                 $stmt->execute([$user_id]);
             }
+            // Para password_reset no actualizamos estado del usuario, solo validamos el código
             
             return true;
             
@@ -175,7 +284,7 @@ class VerificationService {
     /**
      * Enviar email usando Gmail SMTP
      */
-    private function sendEmail($to_email, $codigo, $type) {
+    private function sendEmail($to_email, $codigo, $type, $user_name = '') {
         $subject = '';
         $message = '';
         
@@ -186,8 +295,18 @@ class VerificationService {
                 break;
                 
             case 'email_change':
-                $subject = '📧 Confirmar cambio de correo - Novedades Ashley';
+                $subject = '🔧 Confirmar cambio de correo - Novedades Ashley';
                 $message = $this->getEmailChangeTemplate($codigo);
+                break;
+                
+            case 'password_reset':
+                $subject = '🔐 Recuperar tu contraseña - Novedades Ashley';
+                $message = $this->getPasswordResetTemplate($codigo, $user_name);
+                break;
+                
+            case 'password_reset_confirmation':
+                $subject = '✅ Contraseña actualizada - Novedades Ashley';
+                $message = $this->getPasswordResetConfirmationTemplate($user_name);
                 break;
         }
         
@@ -234,26 +353,41 @@ class VerificationService {
     }
     
     /**
-     * Enviar email con función mail() básica (fallback)
-     */
-    private function sendEmailBasic($to_email, $subject, $message) {
-        $headers = [
-            'MIME-Version: 1.0',
-            'Content-type: text/html; charset=UTF-8',
-            'From: ' . $this->smtp_config['from_name'] . ' <' . $this->smtp_config['from_email'] . '>',
-            'Reply-To: ' . $this->smtp_config['from_email'],
-            'X-Mailer: PHP/' . phpversion()
-        ];
-        
-        return mail($to_email, $subject, $message, implode("\r\n", $headers));
-    }
-    
-    /**
      * Enviar SMS usando Twilio
      */
     private function sendSMS($phone, $codigo) {
         $message = "Tu código de verificación para Novedades Ashley es: {$codigo}. Válido por 15 minutos.";
-        
+        return $this->sendTwilioSMS($phone, $message);
+    }
+    
+    /**
+     * ✨ NUEVO: Enviar SMS de recuperación de contraseña
+     */
+    private function sendPasswordResetSMSMessage($phone, $codigo) {
+        $message = "🔐 Tu código de recuperación de contraseña para Novedades Ashley es: {$codigo}. Válido por 15 minutos. Si no fuiste tú, ignora este mensaje.";
+        return $this->sendTwilioSMS($phone, $message);
+    }
+    
+    /**
+     * Enviar WhatsApp usando Twilio
+     */
+    private function sendWhatsApp($phone, $codigo) {
+        $message = "🔐 *Novedades Ashley*\n\nTu código de verificación es: *{$codigo}*\n\nVálido por 15 minutos.\n\n¡Gracias por confiar en nosotros! 🛍️";
+        return $this->sendTwilioWhatsApp($phone, $message);
+    }
+    
+    /**
+     * ✨ NUEVO: Enviar WhatsApp de recuperación de contraseña
+     */
+    private function sendPasswordResetWhatsAppMessage($phone, $codigo) {
+        $message = "🔐 *Novedades Ashley - Recuperar Contraseña*\n\nTu código de recuperación es: *{$codigo}*\n\nVálido por 15 minutos.\n\n⚠️ Si no solicitaste esto, ignora este mensaje.\n\nTu cuenta permanece segura. 🛡️";
+        return $this->sendTwilioWhatsApp($phone, $message);
+    }
+    
+    /**
+     * Función genérica para enviar SMS con Twilio
+     */
+    private function sendTwilioSMS($phone, $message) {
         // Usar cURL para llamar a la API de Twilio
         $url = "https://api.twilio.com/2010-04-01/Accounts/{$this->twilio_config['account_sid']}/Messages.json";
         
@@ -286,11 +420,9 @@ class VerificationService {
     }
     
     /**
-     * Enviar WhatsApp usando Twilio
+     * Función genérica para enviar WhatsApp con Twilio
      */
-    private function sendWhatsApp($phone, $codigo) {
-        $message = "🔐 *Novedades Ashley*\n\nTu código de verificación es: *{$codigo}*\n\nVálido por 15 minutos.\n\n¡Gracias por confiar en nosotros! 🛍️";
-        
+    private function sendTwilioWhatsApp($phone, $message) {
         // Usar cURL para llamar a la API de Twilio WhatsApp
         $url = "https://api.twilio.com/2010-04-01/Accounts/{$this->twilio_config['account_sid']}/Messages.json";
         
@@ -457,6 +589,149 @@ class VerificationService {
     }
     
     /**
+     * ✨ NUEVO: Template de email para recuperación de contraseña
+     */
+    private function getPasswordResetTemplate($codigo, $user_name = '') {
+        $nombre_saludo = !empty($user_name) ? $user_name : 'Usuario';
+        
+        return "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f4; }
+                .container { background: white; padding: 30px; border-radius: 15px; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                .header { text-align: center; margin-bottom: 30px; }
+                .logo { color: #dc3545; font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+                .code { background: linear-gradient(45deg, #dc3545, #fd7e14); color: white; padding: 20px; border-radius: 10px; font-size: 32px; font-weight: bold; text-align: center; margin: 30px 0; letter-spacing: 4px; }
+                .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; border-top: 1px solid #eee; padding-top: 20px; }
+                .warning { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 15px; margin: 20px 0; color: #856404; }
+                .security { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 8px; padding: 15px; margin: 20px 0; color: #721c24; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <div class='logo'>🔐 Novedades Ashley</div>
+                    <h1 style='color: #333; margin: 0;'>Recuperar Contraseña</h1>
+                    <p style='color: #666; margin: 10px 0 0 0;'>Código de recuperación solicitado</p>
+                </div>
+                
+                <p>Hola <strong>{$nombre_saludo}</strong>,</p>
+                
+                <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en Novedades Ashley.</p>
+                
+                <p>Tu código de recuperación es:</p>
+                
+                <div class='code'>{$codigo}</div>
+                
+                <div class='warning'>
+                    <strong>⏰ Este código expira en 15 minutos.</strong><br>
+                    Úsalo en la página de recuperación para establecer tu nueva contraseña.
+                </div>
+                
+                <div class='security'>
+                    <strong>🚨 ¿No solicitaste esto?</strong><br>
+                    Si no fuiste tú quien pidió restablecer la contraseña, ignora este email. 
+                    Tu cuenta permanece segura y no se realizarán cambios.
+                </div>
+                
+                <p><strong>Instrucciones:</strong></p>
+                <ol>
+                    <li>Ve a la página de recuperación de contraseña</li>
+                    <li>Ingresa el código de 6 dígitos: <strong>{$codigo}</strong></li>
+                    <li>Establece tu nueva contraseña</li>
+                    <li>¡Listo! Ya puedes iniciar sesión</li>
+                </ol>
+                
+                <div class='footer'>
+                    <p><strong>Equipo de Novedades Ashley</strong></p>
+                    <p>\"Descubre lo nuevo, siente la diferencia\"</p>
+                    <hr style='border: none; border-top: 1px solid #eee; margin: 15px 0;'>
+                    <p><small>Este es un email automático, por favor no respondas.<br>
+                    Si tienes problemas, contacta nuestro soporte.</small></p>
+                    <p><small>IP de solicitud: " . ($_SERVER['REMOTE_ADDR'] ?? 'No disponible') . "<br>
+                    Fecha: " . date('d/m/Y H:i:s') . "</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+    }
+    
+    /**
+     * ✨ NUEVO: Template de email de confirmación de reset exitoso
+     */
+    private function getPasswordResetConfirmationTemplate($user_name = '') {
+        $nombre_saludo = !empty($user_name) ? $user_name : 'Usuario';
+        
+        return "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f4; }
+                .container { background: white; padding: 30px; border-radius: 15px; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                .header { text-align: center; margin-bottom: 30px; }
+                .logo { color: #28a745; font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+                .success { background: linear-gradient(45deg, #28a745, #20c997); color: white; padding: 20px; border-radius: 10px; text-align: center; margin: 30px 0; }
+                .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; border-top: 1px solid #eee; padding-top: 20px; }
+                .info { background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; padding: 15px; margin: 20px 0; color: #0c5460; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <div class='logo'>✅ Novedades Ashley</div>
+                    <h1 style='color: #333; margin: 0;'>Contraseña Actualizada</h1>
+                    <p style='color: #666; margin: 10px 0 0 0;'>Tu contraseña ha sido restablecida exitosamente</p>
+                </div>
+                
+                <div class='success'>
+                    <h2 style='margin: 0 0 10px 0;'>🎉 ¡Listo!</h2>
+                    <p style='margin: 0;'>Tu contraseña ha sido actualizada correctamente</p>
+                </div>
+                
+                <p>Hola <strong>{$nombre_saludo}</strong>,</p>
+                
+                <p>Te confirmamos que la contraseña de tu cuenta en Novedades Ashley ha sido restablecida exitosamente el día " . date('d/m/Y') . " a las " . date('H:i:s') . ".</p>
+                
+                <div class='info'>
+                    <strong>🔐 ¿Qué hacer ahora?</strong><br>
+                    • Ya puedes iniciar sesión con tu nueva contraseña<br>
+                    • Guarda tu contraseña en un lugar seguro<br>
+                    • No compartas tu contraseña con nadie<br>
+                    • Considera usar un administrador de contraseñas
+                </div>
+                
+                <p><strong>Consejos de seguridad:</strong></p>
+                <ul>
+                    <li>🔒 Usa una contraseña única para cada sitio web</li>
+                    <li>📱 Mantén tu información de contacto actualizada</li>
+                    <li>🚨 Reporta cualquier actividad sospechosa</li>
+                    <li>🔄 Cambia tu contraseña periódicamente</li>
+                </ul>
+                
+                <p>Si no realizaste este cambio, contacta inmediatamente a nuestro equipo de soporte.</p>
+                
+                <div class='footer'>
+                    <p><strong>Equipo de Novedades Ashley</strong></p>
+                    <p>\"Descubre lo nuevo, siente la diferencia\"</p>
+                    <hr style='border: none; border-top: 1px solid #eee; margin: 15px 0;'>
+                    <p><small>Este es un email automático, por favor no respondas.<br>
+                    Si tienes problemas, contacta nuestro soporte.</small></p>
+                    <p><small>IP de cambio: " . ($_SERVER['REMOTE_ADDR'] ?? 'No disponible') . "<br>
+                    Fecha: " . date('d/m/Y H:i:s') . "</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+    }
+    
+    /**
      * Reenviar código (genera uno nuevo)
      */
     public function resendVerification($user_id, $type) {
@@ -480,6 +755,11 @@ class VerificationService {
                     
                 case 'whatsapp_verification':
                     return $this->sendWhatsAppVerification($user_id, $user['telefono']);
+                    
+                case 'password_reset':
+                    // Para password reset, necesitamos saber si es email, SMS o WhatsApp
+                    // Por defecto intentamos email
+                    return $this->sendPasswordResetEmail($user_id, $user['email']);
                     
                 default:
                     return false;

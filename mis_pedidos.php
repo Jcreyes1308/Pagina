@@ -118,10 +118,10 @@ try {
     // Obtener estadísticas generales
     $stmt_stats = $conn->prepare("
         SELECT 
-            COUNT(*) as total_pedidos,
+            COUNT(CASE WHEN estado NOT IN ('cancelado', 'devuelto') THEN 1 END) as total_pedidos,
             SUM(CASE WHEN estado = 'entregado' THEN 1 ELSE 0 END) as pedidos_completados,
             SUM(CASE WHEN estado IN ('pendiente', 'confirmado', 'procesando', 'enviado', 'en_transito') THEN 1 ELSE 0 END) as pedidos_pendientes,
-            COALESCE(SUM(total), 0) as total_gastado
+            COALESCE(SUM(CASE WHEN estado = 'entregado' THEN total ELSE 0 END), 0) as total_gastado
         FROM pedidos 
         WHERE id_cliente = ? AND activo = 1
     ");
