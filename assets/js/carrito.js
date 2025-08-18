@@ -317,3 +317,83 @@ function debugCarrito() {
         console.error('Error actualizando contador:', e);
     });
 }
+// Función para recomprar pedido (agregar todos los productos al carrito)
+async function recomprarPedido(idPedido) {
+    try {
+        // Obtener el botón que disparó el evento
+        const btn = event ? event.target : document.querySelector(`button[onclick*="recomprarPedido(${idPedido})"]`);
+        
+        if (!confirm('¿Quieres agregar todos los productos de este pedido a tu carrito actual?')) {
+            return;
+        }
+        
+        // Mostrar loading en el botón
+        if (btn) {
+            const textoOriginal = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Recomprando...';
+            btn.disabled = true;
+            
+            // Restaurar función para casos de error
+            window.restaurarBotonRecompra = function() {
+                btn.innerHTML = textoOriginal;
+                btn.disabled = false;
+            };
+        }
+        
+        const formData = new FormData();
+        formData.append('action', 'recomprar');
+        formData.append('id_pedido', idPedido);
+        
+        const response = await fetch('api/carrito.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            throw new Error('Error en la respuesta del servidor');
+        }
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Mostrar mensaje de éxito
+            mostrarNotificacion(data.message, 'success');
+            
+            // Actualizar contador del carrito
+            actualizarContadorCarrito();
+            
+            // Efecto visual en el botón
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-check"></i> ¡Recomprado!';
+                btn.classList.remove('btn-outline-primary');
+                btn.classList.add('btn-success');
+                
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-shopping-cart"></i> Recomprar';
+                    btn.classList.remove('btn-success');
+                    btn.classList.add('btn-outline-primary');
+                    btn.disabled = false;
+                }, 3000);
+            }
+            
+            // Preguntar si quiere ir al carrito
+            setTimeout(() => {
+                if (confirm('Productos agregados correctamente. ¿Quieres ir al carrito para revisar tu compra?')) {
+                    window.location.href = 'carrito.php';
+                }
+            }, 1500);
+            
+        } else {
+            throw new Error(data.message || 'Error desconocido al recomprar');
+        }
+        
+    } catch (error) {
+        console.error('Error al recomprar:', error);
+        mostrarNotificacion('Error al recomprar: ' + error.message, 'error');
+        
+        // Restaurar botón en caso de error
+        if (window.restaurarBotonRecompra) {
+            window.restaurarBotonRecompra();
+        }
+    }
+}

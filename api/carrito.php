@@ -306,25 +306,126 @@ try {
             $response['data'] = $contador;
             break;
             
-        case 'limpiar':
-            $id_cliente = $_SESSION['usuario_id'] ?? null;
+      case 'limpiar':
+    $id_cliente = $_SESSION['usuario_id'] ?? null;
+    
+    if ($id_cliente) {
+        // Usuario registrado - limpiar BD
+        $stmt = $conn->prepare("DELETE FROM carrito_compras WHERE id_cliente = ?");
+        $stmt->execute([$id_cliente]);
+    } else {
+        // Usuario visitante - limpiar sesión
+        $_SESSION['carrito'] = [];
+    }
+    
+    $response['success'] = true;
+    $response['message'] = 'Carrito vaciado';
+    break;
+
+case 'recomprar':
+    $id_pedido = intval($_POST['id_pedido'] ?? 0);
+    
+    if (!$id_pedido) {
+        throw new Exception('ID de pedido requerido');
+    }
+    
+    $id_cliente = $_SESSION['usuario_id'] ?? null;
+    if (!$id_cliente) {
+        throw new Exception('Debes iniciar sesión para recomprar');
+    }
+    
+    // Verificar que el pedido pertenece al usuario
+    $stmt = $conn->prepare("SELECT id FROM pedidos WHERE id = ? AND id_cliente = ?");
+    $stmt->execute([$id_pedido, $id_cliente]);
+    if (!$stmt->fetch()) {
+        throw new Exception('Pedido no encontrado');
+    }
+    
+    // Obtener productos del pedido
+    $stmt = $conn->prepare("
+        SELECT 
+            pd.id_producto, 
+            pd.cantidad,
+            p.nombre,
+            p.precio,
+            p.cantidad_etiquetas
+        FROM pedido_detalles pd
+        INNER JOIN productos p ON pd.id_producto = p.id
+        WHERE pd.id_pedido = ? AND p.activo = 1
+    ");
+    $stmt->execute([$id_pedido]);
+    $productos_pedido = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    if (empty($productos_pedido)) {
+        throw new Exception('No hay productos disponibles para recomprar');
+    }
+    
+    $agregados = 0;
+    $no_disponibles = [];
+    
+    foreach ($productos_pedido as $producto) {
+        try {
+            // Verificar si ya está en el carrito
+            $stmt = $conn->prepare("
+                SELECT cantidad FROM carrito_compras 
+                WHERE id_cliente = ? AND id_producto = ?
+            ");
+            $stmt->execute([$id_cliente, $producto['id_producto']]);
+            $en_carrito = $stmt->fetch();
             
-            if ($id_cliente) {
-                // Usuario registrado - limpiar BD
-                $stmt = $conn->prepare("DELETE FROM carrito_compras WHERE id_cliente = ?");
-                $stmt->execute([$id_cliente]);
-            } else {
-                // Usuario visitante - limpiar sesión
-                $_SESSION['carrito'] = [];
+            $cantidad_deseada = $producto['cantidad'];
+            if ($en_carrito) {
+                $cantidad_deseada += $en_carrito['cantidad'];
             }
             
-            $response['success'] = true;
-            $response['message'] = 'Carrito vaciado';
-            break;
+            // Verificar stock disponible
+            if ($cantidad_deseada <= $producto['cantidad_etiquetas']) {
+                if ($en_carrito) {
+                    // Actualizar cantidad existente
+                    $stmt = $conn->prepare("
+                        UPDATE carrito_compras 
+                        SET cantidad = ? 
+                        WHERE id_cliente = ? AND id_producto = ?
+                    ");
+                    $stmt->execute([$cantidad_deseada, $id_cliente, $producto['id_producto']]);
+                } else {
+                    // Agregar nuevo item
+                    $stmt = $conn->prepare("
+                        INSERT INTO carrito_compras (id_cliente, id_producto, cantidad) 
+                        VALUES (?, ?, ?)
+                    ");
+                    $stmt->execute([$id_cliente, $producto['id_producto'], $producto['cantidad']]);
+                }
+                $agregados++;
+            } else {
+                $no_disponibles[] = $producto['nombre'] . ' (stock: ' . $producto['cantidad_etiquetas'] . ')';
+            }
             
-        default:
-            throw new Exception('Acción no válida: ' . $action);
+        } catch (Exception $e) {
+            $no_disponibles[] = $producto['nombre'] . ' (error)';
+        }
     }
+    
+    $mensaje = "Se agregaron $agregados productos al carrito";
+    if (!empty($no_disponibles)) {
+        $mensaje .= ". No disponibles: " . implode(', ', $no_disponibles);
+    }
+    
+    if ($agregados === 0) {
+        throw new Exception('No se pudo agregar ningún producto al carrito');
+    }
+    
+    $response['success'] = true;
+    $response['message'] = $mensaje;
+    $response['data'] = [
+        'agregados' => $agregados,
+        'no_disponibles' => $no_disponibles
+    ];
+    break;
+
+default:
+    throw new Exception('Acción no válida: ' . $action);
+}
     
 } catch (Exception $e) {
     $response['success'] = false;

@@ -780,7 +780,7 @@ try {
                                                 <i class="fas fa-download"></i> Factura
                                             </button>
                                             <button class="btn btn-outline-warning btn-action btn-sm" 
-                                                    onclick="volverAComprar(<?= $pedido['id'] ?>)">
+                                                    onclick="recomprarPedido(<?= $pedido['id'] ?>)">
                                                 <i class="fas fa-redo"></i> Volver a Comprar
                                             </button>
                                             <button class="btn btn-outline-info btn-action btn-sm" 
@@ -934,7 +934,6 @@ try {
     <script>
         // Función para ver detalles del pedido
         function verDetallesPedido(idPedido) {
-            // Crear modal con detalles completos
             const modal = document.createElement('div');
             modal.className = 'modal fade';
             modal.innerHTML = `
@@ -965,7 +964,6 @@ try {
             const bsModal = new bootstrap.Modal(modal);
             bsModal.show();
             
-            // Simular carga de datos
             setTimeout(() => {
                 modal.querySelector('.modal-body').innerHTML = `
                     <div class="alert alert-info">
@@ -983,7 +981,6 @@ try {
                 `;
             }, 1500);
             
-            // Limpiar modal al cerrar
             modal.addEventListener('hidden.bs.modal', () => {
                 modal.remove();
             });
@@ -1000,39 +997,11 @@ try {
                   'Estado: Por implementar');
         }
         
-        // Función para volver a comprar
-        function volverAComprar(idPedido) {
-            if (confirm('¿Quieres agregar todos los productos de este pedido a tu carrito actual?')) {
-                // Mostrar loading
-                const btn = event.target;
-                const originalText = btn.innerHTML;
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Agregando...';
-                btn.disabled = true;
-                
-                // Simular agregado al carrito
-                setTimeout(() => {
-                    alert(`Productos del pedido #${idPedido} agregados al carrito correctamente`);
-                    btn.innerHTML = originalText;
-                    btn.disabled = false;
-                    
-                    // Actualizar contador del carrito
-                    if (typeof actualizarContadorCarrito === 'function') {
-                        actualizarContadorCarrito();
-                    }
-                }, 2000);
-            }
-        }
-        
-        // Función para recomprar (agregar al carrito)
-        function recomprarPedido(idPedido) {
-            volverAComprar(idPedido);
-        }
-        
         // Función para cancelar pedido
         function cancelarPedido(idPedido) {
             const motivo = prompt('¿Por qué deseas cancelar este pedido?\n(Opcional - nos ayuda a mejorar)');
             
-            if (motivo !== null) { // null significa que canceló el prompt
+            if (motivo !== null) {
                 if (confirm('¿Estás seguro de que quieres cancelar este pedido?\n\nEsta acción no se puede deshacer.')) {
                     alert(`Cancelando pedido #${idPedido}...\n\n` +
                           'Esta función:\n' +
@@ -1179,30 +1148,7 @@ try {
                     card.style.transform = 'translateY(0)';
                 }, index * 50);
             });
-            
-            // Tooltips para botones de acción
-            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-            const tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-                return new bootstrap.Tooltip(tooltipTriggerEl);
-            });
         });
-        
-        // Función para mostrar/ocultar detalles de pedido
-        function toggleDetallesPedido(button) {
-            const card = button.closest('.orders-card');
-            const details = card.querySelector('.order-details');
-            const icon = button.querySelector('i');
-            
-            if (details.style.display === 'none') {
-                details.style.display = 'block';
-                icon.className = 'fas fa-chevron-up';
-                button.innerHTML = '<i class="fas fa-chevron-up"></i> Ocultar Detalles';
-            } else {
-                details.style.display = 'none';
-                icon.className = 'fas fa-chevron-down';
-                button.innerHTML = '<i class="fas fa-chevron-down"></i> Ver Detalles';
-            }
-        }
     </script>
 </body>
 </html>
