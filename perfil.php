@@ -1,5 +1,5 @@
 <?php
-// perfil.php - Página de perfil del usuario COMPLETA
+// perfil.php - Página de perfil del usuario COMPLETA con verificaciones y estilos bonitos
 session_start();
 
 // Verificar que el usuario esté logueado
@@ -123,11 +123,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Número de tarjeta inválido';
         } else {
             try {
-                // En producción, aquí encriptarías el número completo
                 $ultimos_4 = substr($numero_tarjeta, -4);
                 $nombre_tarjeta = '';
                 
-                // Detectar tipo de tarjeta por el número
                 if (preg_match('/^4/', $numero_tarjeta)) {
                     $nombre_tarjeta = 'Visa';
                 } elseif (preg_match('/^5[1-5]/', $numero_tarjeta)) {
@@ -138,7 +136,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $nombre_tarjeta = 'Tarjeta';
                 }
                 
-                // Si es principal, quitar principal de otros
                 if ($es_principal) {
                     $stmt = $conn->prepare("UPDATE metodos_pago SET es_principal = 0 WHERE id_cliente = ?");
                     $stmt->execute([$_SESSION['usuario_id']]);
@@ -152,7 +149,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $success = 'Método de pago agregado correctamente';
                 
-                // Recargar métodos de pago
                 $stmt = $conn->prepare("SELECT * FROM metodos_pago WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
                 $stmt->execute([$_SESSION['usuario_id']]);
                 $metodos_pago = $stmt->fetchAll();
@@ -179,7 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Los campos marcados son requeridos';
         } else {
             try {
-                // Si es principal, quitar principal de otras
                 if ($es_principal) {
                     $stmt = $conn->prepare("UPDATE direcciones_envio SET es_principal = 0 WHERE id_cliente = ?");
                     $stmt->execute([$_SESSION['usuario_id']]);
@@ -193,7 +188,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $success = 'Dirección agregada correctamente';
                 
-                // Recargar direcciones
                 $stmt = $conn->prepare("SELECT * FROM direcciones_envio WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
                 $stmt->execute([$_SESSION['usuario_id']]);
                 $direcciones = $stmt->fetchAll();
@@ -210,7 +204,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$_POST['id_metodo'], $_SESSION['usuario_id']]);
             $success = 'Método de pago eliminado';
             
-            // Recargar métodos de pago
             $stmt = $conn->prepare("SELECT * FROM metodos_pago WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
             $stmt->execute([$_SESSION['usuario_id']]);
             $metodos_pago = $stmt->fetchAll();
@@ -225,7 +218,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$_POST['id_direccion'], $_SESSION['usuario_id']]);
             $success = 'Dirección eliminada';
             
-            // Recargar direcciones
             $stmt = $conn->prepare("SELECT * FROM direcciones_envio WHERE id_cliente = ? AND activo = 1 ORDER BY es_principal DESC, created_at DESC");
             $stmt->execute([$_SESSION['usuario_id']]);
             $direcciones = $stmt->fetchAll();
@@ -244,12 +236,10 @@ $stats = [
 ];
 
 try {
-    // Contar items en carrito
     $stmt = $conn->prepare("SELECT COALESCE(SUM(cantidad), 0) as total FROM carrito_compras WHERE id_cliente = ?");
     $stmt->execute([$_SESSION['usuario_id']]);
     $result = $stmt->fetch();
     $stats['items_carrito'] = $result['total'];
-    
 } catch (Exception $e) {
     error_log("Error obteniendo estadísticas: " . $e->getMessage());
 }
@@ -426,6 +416,86 @@ try {
         .nav-tabs .nav-link.active {
             background: #667eea;
             color: white;
+        }
+        
+        /* ===== ESTILOS PARA VERIFICACIONES ===== */
+        .verification-section {
+            border: 1px solid #e9ecef;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .verification-section:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.1);
+        }
+
+        .status-verified {
+            background: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+            border-color: #ffeaa7;
+        }
+
+        .verification-badge {
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .badge-verified {
+            background: #28a745;
+            color: white;
+        }
+
+        .badge-required {
+            background: #dc3545;
+            color: white;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .history-item:last-child {
+            border-bottom: none;
+        }
+
+        .history-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            font-size: 1.2rem;
+        }
+
+        .history-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .history-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .history-sent {
+            background: #cce5ff;
+            color: #004085;
         }
         
         @media (max-width: 768px) {
@@ -617,6 +687,11 @@ try {
                         <li class="nav-item" role="presentation">
                             <button class="nav-link" id="addresses-tab" data-bs-toggle="tab" data-bs-target="#addresses" type="button" role="tab">
                                 <i class="fas fa-map-marker-alt"></i> Direcciones
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="verification-tab" data-bs-toggle="tab" data-bs-target="#verification" type="button" role="tab">
+                                <i class="fas fa-shield-check"></i> Verificaciones
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
@@ -824,6 +899,114 @@ try {
                                         <p class="text-muted">Agrega direcciones para facilitar tus envíos</p>
                                     </div>
                                 <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <!-- ===== NUEVA PESTAÑA DE VERIFICACIONES ===== -->
+                        <div class="tab-pane fade" id="verification" role="tabpanel">
+                            <div class="profile-card">
+                                <h5 class="section-title">
+                                    <i class="fas fa-shield-check"></i> Verificar tu Información
+                                </h5>
+                                <p class="text-muted mb-4">
+                                    Verifica tu email y teléfono para mayor seguridad y para recibir notificaciones importantes.
+                                </p>
+                                
+                                <!-- Estado de verificaciones -->
+                                <div class="row mb-4" id="verification-status">
+                                    <!-- Se carga dinámicamente -->
+                                </div>
+                                
+                                <!-- Email Verification -->
+                                <div class="verification-section mb-4" id="email-verification-section">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <div>
+                                            <h6><i class="fas fa-envelope"></i> Verificación de Email</h6>
+                                            <small class="text-muted">Confirma tu dirección de correo electrónico</small>
+                                        </div>
+                                        <div id="email-status-badge">
+                                            <!-- Badge dinámico -->
+                                        </div>
+                                    </div>
+                                    
+                                    <div id="email-verification-form" class="d-none">
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-info-circle"></i> 
+                                            <strong>Te enviaremos un código de 6 dígitos a:</strong>
+                                            <br><span id="email-display"></span>
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <button type="button" class="btn btn-primary w-100" onclick="sendEmailVerification()">
+                                                    <i class="fas fa-paper-plane"></i> Enviar Código por Email
+                                                </button>
+                                            </div>
+                                            <div class="col-md-6 mb-3">
+                                                <div class="input-group">
+                                                    <input type="text" class="form-control" id="email-code" placeholder="Código de 6 dígitos" maxlength="6">
+                                                    <button class="btn btn-success" type="button" onclick="verifyEmailCode()">
+                                                        <i class="fas fa-check"></i> Verificar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div id="email-verification-message" class="mt-2"></div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Phone Verification -->
+                                <div class="verification-section mb-4" id="phone-verification-section">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <div>
+                                            <h6><i class="fas fa-mobile-alt"></i> Verificación de Teléfono</h6>
+                                            <small class="text-muted">Confirma tu número de teléfono</small>
+                                        </div>
+                                        <div id="phone-status-badge">
+                                            <!-- Badge dinámico -->
+                                        </div>
+                                    </div>
+                                    
+                                    <div id="phone-verification-form" class="d-none">
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-info-circle"></i> 
+                                            <strong>Elige cómo recibir tu código para:</strong>
+                                            <br><span id="phone-display"></span>
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <div class="col-md-4 mb-3">
+                                                <button type="button" class="btn btn-outline-primary w-100" onclick="sendSMSVerification()">
+                                                    <i class="fas fa-sms"></i> SMS
+                                                </button>
+                                            </div>
+                                            <div class="col-md-4 mb-3">
+                                                <button type="button" class="btn btn-outline-success w-100" onclick="sendWhatsAppVerification()">
+                                                    <i class="fab fa-whatsapp"></i> WhatsApp
+                                                </button>
+                                            </div>
+                                            <div class="col-md-4 mb-3">
+                                                <div class="input-group">
+                                                    <input type="text" class="form-control" id="phone-code" placeholder="Código" maxlength="6">
+                                                    <button class="btn btn-success" type="button" onclick="verifyPhoneCode()">
+                                                        <i class="fas fa-check"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div id="phone-verification-message" class="mt-2"></div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Historial de Verificaciones -->
+                                <div class="verification-section">
+                                    <h6><i class="fas fa-history"></i> Actividad Reciente</h6>
+                                    <div id="verification-history" class="mt-3">
+                                        <!-- Se carga dinámicamente -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -1141,6 +1324,471 @@ try {
     <script src="assets/js/carrito.js"></script>
     
     <script>
+        // ===== FUNCIONES PARA VERIFICACIONES =====
+        
+        // Variables globales para verificación
+        let currentVerificationType = '';
+
+        // Cargar estado cuando se hace click en la pestaña de verificaciones
+        document.addEventListener('DOMContentLoaded', function() {
+            const verificationTab = document.getElementById('verification-tab');
+            if (verificationTab) {
+                verificationTab.addEventListener('click', function() {
+                    loadVerificationStatus();
+                });
+            }
+        });
+
+        // Cargar estado de verificaciones
+        async function loadVerificationStatus() {
+            try {
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: 'action=get_verification_status'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    updateVerificationUI(data.data);
+                    loadVerificationHistory();
+                } else {
+                    showVerificationMessage('email-verification-message', 'Error: ' + data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('email-verification-message', 'Error de conexión', 'error');
+            }
+        }
+
+        // Actualizar interfaz con estado de verificaciones
+        function updateVerificationUI(verificationData) {
+            const statusContainer = document.getElementById('verification-status');
+            
+            // Status cards
+            statusContainer.innerHTML = `
+                <div class="col-md-6">
+                    <div class="verification-section ${verificationData.email_verified ? 'status-verified' : 'status-pending'}">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6><i class="fas fa-envelope"></i> Email</h6>
+                                <small>${verificationData.masked_email || 'No configurado'}</small>
+                            </div>
+                            <span class="verification-badge ${verificationData.email_verified ? 'badge-verified' : 'badge-required'}">
+                                ${verificationData.email_verified ? 'Verificado' : 'Pendiente'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="verification-section ${verificationData.phone_verified ? 'status-verified' : 'status-pending'}">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6><i class="fas fa-mobile-alt"></i> Teléfono</h6>
+                                <small>${verificationData.masked_phone || 'No configurado'}</small>
+                            </div>
+                            <span class="verification-badge ${verificationData.phone_verified ? 'badge-verified' : 'badge-required'}">
+                                ${verificationData.phone_verified ? 'Verificado' : 'Pendiente'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Email verification section
+            const emailForm = document.getElementById('email-verification-form');
+            const emailBadge = document.getElementById('email-status-badge');
+            const emailDisplay = document.getElementById('email-display');
+            
+            if (verificationData.has_email) {
+                emailDisplay.textContent = verificationData.masked_email;
+                
+                if (verificationData.email_verified) {
+                    emailBadge.innerHTML = '<span class="badge bg-success"><i class="fas fa-check"></i> Verificado</span>';
+                    emailForm.classList.add('d-none');
+                } else {
+                    emailBadge.innerHTML = '<span class="badge bg-warning"><i class="fas fa-clock"></i> Pendiente</span>';
+                    emailForm.classList.remove('d-none');
+                }
+            } else {
+                document.getElementById('email-verification-section').innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Email no configurado</strong><br>
+                        Agrega tu email en la pestaña de información personal para poder verificarlo.
+                    </div>
+                `;
+            }
+            
+            // Phone verification section
+            const phoneForm = document.getElementById('phone-verification-form');
+            const phoneBadge = document.getElementById('phone-status-badge');
+            const phoneDisplay = document.getElementById('phone-display');
+            
+            if (verificationData.has_phone) {
+                phoneDisplay.textContent = verificationData.masked_phone;
+                
+                if (verificationData.phone_verified) {
+                    phoneBadge.innerHTML = '<span class="badge bg-success"><i class="fas fa-check"></i> Verificado</span>';
+                    phoneForm.classList.add('d-none');
+                } else {
+                    phoneBadge.innerHTML = '<span class="badge bg-warning"><i class="fas fa-clock"></i> Pendiente</span>';
+                    phoneForm.classList.remove('d-none');
+                }
+            } else {
+                document.getElementById('phone-verification-section').innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Teléfono no configurado</strong><br>
+                        Agrega tu teléfono en la pestaña de información personal para poder verificarlo.
+                    </div>
+                `;
+            }
+        }
+
+        // Enviar verificación por email
+        async function sendEmailVerification() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            try {
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+                button.disabled = true;
+                
+                const email = '<?= htmlspecialchars($usuario['email'] ?? '') ?>';
+                
+                const formData = new FormData();
+                formData.append('action', 'send_email_verification');
+                formData.append('email', email);
+                
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showVerificationMessage('email-verification-message', data.message, 'success');
+                    document.getElementById('email-code').focus();
+                } else {
+                    showVerificationMessage('email-verification-message', data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('email-verification-message', 'Error de conexión', 'error');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+
+        // Verificar código de email
+        async function verifyEmailCode() {
+            const code = document.getElementById('email-code').value.trim();
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            if (!code || code.length !== 6) {
+                showVerificationMessage('email-verification-message', 'Ingresa un código de 6 dígitos', 'error');
+                return;
+            }
+            
+            try {
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                button.disabled = true;
+                
+                const formData = new FormData();
+                formData.append('action', 'verify_email');
+                formData.append('code', code);
+                
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showVerificationMessage('email-verification-message', data.message, 'success');
+                    setTimeout(() => loadVerificationStatus(), 2000);
+                } else {
+                    showVerificationMessage('email-verification-message', data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('email-verification-message', 'Error de conexión', 'error');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+
+        // Enviar verificación por SMS
+        async function sendSMSVerification() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            try {
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+                button.disabled = true;
+                
+                const telefono = '<?= htmlspecialchars($usuario['telefono'] ?? '') ?>';
+                
+                if (!telefono) {
+                    showVerificationMessage('phone-verification-message', 'Primero configura tu teléfono', 'error');
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('action', 'send_sms_verification');
+                formData.append('phone', telefono);
+                
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showVerificationMessage('phone-verification-message', data.message, 'success');
+                    currentVerificationType = 'phone_verification';
+                    document.getElementById('phone-code').focus();
+                } else {
+                    showVerificationMessage('phone-verification-message', data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('phone-verification-message', 'Error de conexión', 'error');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+
+        // Enviar verificación por WhatsApp
+        async function sendWhatsAppVerification() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            try {
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+                button.disabled = true;
+                
+                const telefono = '<?= htmlspecialchars($usuario['telefono'] ?? '') ?>';
+                
+                if (!telefono) {
+                    showVerificationMessage('phone-verification-message', 'Primero configura tu teléfono', 'error');
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('action', 'send_whatsapp_verification');
+                formData.append('phone', telefono);
+                
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showVerificationMessage('phone-verification-message', data.message, 'success');
+                    currentVerificationType = 'whatsapp_verification';
+                    document.getElementById('phone-code').focus();
+                } else {
+                    showVerificationMessage('phone-verification-message', data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('phone-verification-message', 'Error de conexión', 'error');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+
+        // Verificar código de teléfono
+        async function verifyPhoneCode() {
+            const code = document.getElementById('phone-code').value.trim();
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            if (!code || code.length !== 6) {
+                showVerificationMessage('phone-verification-message', 'Ingresa un código de 6 dígitos', 'error');
+                return;
+            }
+            
+            if (!currentVerificationType) {
+                showVerificationMessage('phone-verification-message', 'Primero solicita un código', 'error');
+                return;
+            }
+            
+            try {
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                button.disabled = true;
+                
+                const formData = new FormData();
+                formData.append('action', 'verify_phone');
+                formData.append('code', code);
+                formData.append('verification_type', currentVerificationType);
+                
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showVerificationMessage('phone-verification-message', data.message, 'success');
+                    setTimeout(() => {
+                        loadVerificationStatus();
+                        currentVerificationType = '';
+                    }, 2000);
+                } else {
+                    showVerificationMessage('phone-verification-message', data.message, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showVerificationMessage('phone-verification-message', 'Error de conexión', 'error');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+
+        // Cargar historial de verificaciones
+        async function loadVerificationHistory() {
+            try {
+                const response = await fetch('api/verification.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: 'action=get_verification_history'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayVerificationHistory(data.data);
+                }
+                
+            } catch (error) {
+                console.error('Error cargando historial:', error);
+            }
+        }
+
+        // Mostrar historial de verificaciones
+        function displayVerificationHistory(history) {
+            const historyContainer = document.getElementById('verification-history');
+            
+            if (!history || history.length === 0) {
+                historyContainer.innerHTML = '<p class="text-muted">No hay actividad reciente</p>';
+                return;
+            }
+            
+            let historyHTML = '';
+            
+            history.forEach(item => {
+                const date = new Date(item.created_at).toLocaleString('es-MX');
+                const iconClass = item.success ? 'history-success' : 'history-failed';
+                const iconName = item.success ? 'fa-check' : 'fa-times';
+                const description = item.action === 'sent' ? 'Código enviado' : 
+                                   item.action === 'verified' ? 'Verificación exitosa' : 'Verificación fallida';
+                
+                historyHTML += `
+                    <div class="history-item">
+                        <div class="history-icon ${iconClass}">
+                            <i class="fas ${iconName}"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="d-flex justify-content-between">
+                                <strong>${description}</strong>
+                                <small class="text-muted">${date}</small>
+                            </div>
+                            <small class="text-muted">
+                                ${item.contact_info} • ${item.method.toUpperCase()}
+                            </small>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            historyContainer.innerHTML = historyHTML;
+        }
+
+        // Mostrar mensajes de verificación
+        function showVerificationMessage(containerId, message, type) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            const alertClass = type === 'success' ? 'alert-success' : 
+                               type === 'error' ? 'alert-danger' : 'alert-info';
+            
+            const icon = type === 'success' ? 'fa-check-circle' : 
+                         type === 'error' ? 'fa-exclamation-triangle' : 'fa-info-circle';
+            
+            container.innerHTML = `
+                <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+                    <i class="fas ${icon}"></i> ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+            
+            // Auto-ocultar después de 8 segundos
+            setTimeout(() => {
+                const alert = container.querySelector('.alert');
+                if (alert) {
+                    alert.classList.remove('show');
+                    setTimeout(() => alert.remove(), 150);
+                }
+            }, 8000);
+        }
+
+        // Auto-formato para códigos de verificación
+        document.addEventListener('DOMContentLoaded', function() {
+            // Email code formatting
+            const emailCodeInput = document.getElementById('email-code');
+            if (emailCodeInput) {
+                emailCodeInput.addEventListener('input', function(e) {
+                    let value = e.target.value.replace(/\D/g, '');
+                    e.target.value = value.substring(0, 6);
+                    
+                    if (value.length === 6) {
+                        setTimeout(() => verifyEmailCode(), 100);
+                    }
+                });
+            }
+            
+            // Phone code formatting
+            const phoneCodeInput = document.getElementById('phone-code');
+            if (phoneCodeInput) {
+                phoneCodeInput.addEventListener('input', function(e) {
+                    let value = e.target.value.replace(/\D/g, '');
+                    e.target.value = value.substring(0, 6);
+                    
+                    if (value.length === 6 && currentVerificationType) {
+                        setTimeout(() => verifyPhoneCode(), 100);
+                    }
+                });
+            }
+        });
+        
+        // ===== FUNCIONES ORIGINALES DEL PERFIL =====
+        
         // Función para mostrar/ocultar contraseña
         function togglePassword(fieldId) {
             const passwordInput = document.getElementById(fieldId);

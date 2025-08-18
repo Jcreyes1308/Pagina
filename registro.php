@@ -1,5 +1,5 @@
 <?php
-// registro.php - Página de registro de usuarios
+// registro.php - Registro simplificado con verificación automática
 session_start();
 
 // Si ya está logueado, redirigir al inicio
@@ -21,10 +21,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirm_password = $_POST['confirm_password'] ?? '';
-    $telefono = trim($_POST['telefono'] ?? '');
-    $direccion = trim($_POST['direccion'] ?? '');
     
-    // Validaciones
+    // Validaciones simplificadas
     if (empty($nombre) || empty($email) || empty($password)) {
         $error = 'Nombre, email y contraseña son requeridos';
     } elseif (strlen($password) < 6) {
@@ -41,44 +39,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($stmt->fetch()) {
                 $error = 'Este email ya está registrado';
             } else {
-                // Crear usuario
+                // Crear usuario SIN teléfono ni dirección
                 $password_hash = password_hash($password, PASSWORD_DEFAULT);
                 
                 $stmt = $conn->prepare("
-                    INSERT INTO clientes (nombre, email, password, telefono, direccion, activo) 
-                    VALUES (?, ?, ?, ?, ?, 1)
+                    INSERT INTO clientes (nombre, email, password, activo) 
+                    VALUES (?, ?, ?, 1)
                 ");
                 
-                $stmt->execute([$nombre, $email, $password_hash, $telefono, $direccion]);
-                $nuevo_id = $conn->lastInsertId();
-                
-                // Auto-login después del registro
-                $_SESSION['usuario_id'] = $nuevo_id;
-                $_SESSION['usuario_nombre'] = $nombre;
-                $_SESSION['usuario_email'] = $email;
-                $_SESSION['usuario_telefono'] = $telefono;
-                
-                // Migrar carrito si existe
-                if (isset($_SESSION['carrito']) && !empty($_SESSION['carrito'])) {
-                    foreach ($_SESSION['carrito'] as $item) {
-                        try {
-                            if ($item['tipo'] === 'producto') {
-                                $stmt = $conn->prepare("INSERT INTO carrito_compras (id_cliente, id_producto, cantidad) VALUES (?, ?, ?)");
-                                $stmt->execute([$nuevo_id, $item['id'], $item['cantidad']]);
-                            } else if ($item['tipo'] === 'paquete') {
-                                $stmt = $conn->prepare("INSERT INTO carrito_compras (id_cliente, id_paquete, cantidad) VALUES (?, ?, ?)");
-                                $stmt->execute([$nuevo_id, $item['id'], $item['cantidad']]);
+                if ($stmt->execute([$nombre, $email, $password_hash])) {
+                    $nuevo_id = $conn->lastInsertId();
+                    
+                    // Auto-login
+                    $_SESSION['usuario_id'] = $nuevo_id;
+                    $_SESSION['usuario_nombre'] = $nombre;
+                    $_SESSION['usuario_email'] = $email;
+                    
+                    // Migrar carrito si existe
+                    if (isset($_SESSION['carrito']) && !empty($_SESSION['carrito'])) {
+                        foreach ($_SESSION['carrito'] as $item) {
+                            try {
+                                if (isset($item['id_producto'])) {
+                                    $stmt = $conn->prepare("INSERT INTO carrito_compras (id_cliente, id_producto, cantidad) VALUES (?, ?, ?)");
+                                    $stmt->execute([$nuevo_id, $item['id_producto'], $item['cantidad']]);
+                                }
+                            } catch (Exception $e) {
+                                error_log("Error migrando carrito: " . $e->getMessage());
                             }
-                        } catch (Exception $e) {
-                            error_log("Error migrando carrito en registro: " . $e->getMessage());
                         }
+                        unset($_SESSION['carrito']);
                     }
-                    unset($_SESSION['carrito']);
+                    
+                    // ===============================
+                    // ENVIAR VERIFICACIÓN AUTOMÁTICA
+                    // ===============================
+                    
+                    require_once __DIR__ . '/config/verification.php';
+                    $verification = new VerificationService($conn);
+                    
+                    $verification_sent = false;
+                    
+                    try {
+                        $email_sent = $verification->sendEmailVerification($nuevo_id, $email);
+                        if ($email_sent) {
+                            $verification_sent = true;
+                            
+                            // Log del envío automático
+                            $stmt_log = $conn->prepare("
+                                INSERT INTO verification_logs (user_id, type, action, method, contact_info, ip_address, success) 
+                                VALUES (?, 'email_verification', 'sent', 'email', ?, ?, 1)
+                            ");
+                            $stmt_log->execute([$nuevo_id, maskEmail($email), $_SERVER['REMOTE_ADDR'] ?? '']);
+                        }
+                    } catch (Exception $e) {
+                        error_log("Error enviando verificación automática: " . $e->getMessage());
+                    }
+                    
+                    // Mensaje y redirección según si se envió verificación
+                    if ($verification_sent) {
+                        $success = '¡Cuenta creada exitosamente! 📧 Te hemos enviado un código de verificación a tu email.';
+                        // JavaScript para redirigir a verificación
+                        echo '<script>
+                            setTimeout(function() {
+                                window.location.href = "verificar_email.php?first_time=1";
+                            }, 3000);
+                        </script>';
+                    } else {
+                        $success = '¡Cuenta creada exitosamente! Puedes verificar tu email desde tu perfil.';
+                        // JavaScript para redirigir al inicio
+                        echo '<script>
+                            setTimeout(function() {
+                                window.location.href = "index.php";
+                            }, 2000);
+                        </script>';
+                    }
                 }
-                
-                // Redirigir con mensaje de éxito
-                $success = 'Cuenta creada exitosamente. ¡Bienvenido!';
-                header('refresh:2;url=index.php');
             }
         } catch (Exception $e) {
             $error = 'Error al crear la cuenta: ' . $e->getMessage();
@@ -92,7 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Registrarse - Tienda Multicategoría</title>
+    <title>Registrarse - Novedades Ashley</title>
     
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -184,9 +219,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #6c757d;
             cursor: pointer;
         }
-        .form-floating {
-            position: relative;
-        }
         .password-strength {
             margin-top: 5px;
             font-size: 0.8rem;
@@ -194,10 +226,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .strength-weak { color: #dc3545; }
         .strength-medium { color: #ffc107; }
         .strength-strong { color: #28a745; }
-        .alert {
-            border-radius: 10px;
-            border: none;
-        }
         .brand-title {
             font-size: 2rem;
             font-weight: bold;
@@ -240,35 +268,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <div class="text-center" style="z-index: 1;">
                                     <i class="fas fa-user-plus fa-4x mb-4"></i>
                                     <h2 class="brand-title">¡Únete a Nosotros!</h2>
-                                    <p class="lead mb-4">Crea tu cuenta y disfruta de beneficios exclusivos</p>
+                                    <p class="lead mb-4">Crea tu cuenta en segundos y empieza a comprar</p>
                                     
                                     <div class="text-start">
                                         <div class="d-flex align-items-center mb-3">
-                                            <i class="fas fa-percent fa-2x me-3"></i>
+                                            <i class="fas fa-zap fa-2x me-3"></i>
                                             <div>
-                                                <strong>Descuentos Especiales</strong><br>
-                                                <small>Precios preferenciales para miembros</small>
+                                                <strong>Registro Rápido</strong><br>
+                                                <small>Solo nombre, email y contraseña</small>
                                             </div>
                                         </div>
                                         <div class="d-flex align-items-center mb-3">
-                                            <i class="fas fa-history fa-2x me-3"></i>
+                                            <i class="fas fa-shield-check fa-2x me-3"></i>
                                             <div>
-                                                <strong>Historial de Compras</strong><br>
-                                                <small>Rastrea todos tus pedidos</small>
+                                                <strong>Verificación Automática</strong><br>
+                                                <small>Te enviamos el código al instante</small>
                                             </div>
                                         </div>
                                         <div class="d-flex align-items-center mb-3">
-                                            <i class="fas fa-heart fa-2x me-3"></i>
+                                            <i class="fas fa-user-cog fa-2x me-3"></i>
                                             <div>
-                                                <strong>Lista de Favoritos</strong><br>
-                                                <small>Guarda tus productos favoritos</small>
+                                                <strong>Completa Después</strong><br>
+                                                <small>Agrega teléfono y direcciones en tu perfil</small>
                                             </div>
                                         </div>
                                         <div class="d-flex align-items-center">
-                                            <i class="fas fa-shipping-fast fa-2x me-3"></i>
+                                            <i class="fas fa-shopping-cart fa-2x me-3"></i>
                                             <div>
-                                                <strong>Envío Rápido</strong><br>
-                                                <small>Direcciones guardadas</small>
+                                                <strong>Compra Inmediata</strong><br>
+                                                <small>Tu carrito se guarda automáticamente</small>
                                             </div>
                                         </div>
                                     </div>
@@ -293,7 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <?php if ($success): ?>
                                     <div class="alert alert-success" role="alert">
                                         <i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?>
-                                        <br><small>Redirigiendo al inicio...</small>
+                                        <br><small>Redirigiendo...</small>
                                     </div>
                                 <?php endif; ?>
                                 
@@ -335,7 +363,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                             <div class="password-strength" id="password-strength"></div>
                                         </div>
                                         
-                                        <div class="col-md-6 mb-3">
+                                        <div class="col-md-6 mb-4">
                                             <div class="form-floating position-relative">
                                                 <input type="password" class="form-control" id="confirm_password" name="confirm_password" 
                                                        placeholder="Confirmar contraseña" required minlength="6">
@@ -347,28 +375,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                                 </button>
                                             </div>
                                         </div>
-                                        
-                                        <div class="col-md-6 mb-3">
-                                            <div class="form-floating">
-                                                <input type="tel" class="form-control" id="telefono" name="telefono" 
-                                                       placeholder="555-0123" maxlength="20"
-                                                       value="<?= htmlspecialchars($telefono ?? '') ?>">
-                                                <label for="telefono">
-                                                    <i class="fas fa-phone"></i> Teléfono
-                                                </label>
-                                            </div>
-                                        </div>
-                                        
-                                        <div class="col-md-6 mb-4">
-                                            <div class="form-floating">
-                                                <input type="text" class="form-control" id="direccion" name="direccion" 
-                                                       placeholder="Tu dirección" maxlength="200"
-                                                       value="<?= htmlspecialchars($direccion ?? '') ?>">
-                                                <label for="direccion">
-                                                    <i class="fas fa-map-marker-alt"></i> Dirección
-                                                </label>
-                                            </div>
-                                        </div>
+                                    </div>
+                                    
+                                    <!-- Nota informativa -->
+                                    <div class="alert alert-info">
+                                        <i class="fas fa-info-circle"></i>
+                                        <strong>Después del registro podrás agregar:</strong>
+                                        <ul class="mb-0 mt-2">
+                                            <li>📱 Número de teléfono</li>
+                                            <li>🏠 Direcciones de envío</li>
+                                            <li>💳 Métodos de pago</li>
+                                        </ul>
                                     </div>
                                     
                                     <div class="form-check mb-4">
@@ -532,11 +549,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creando cuenta...';
             submitBtn.disabled = true;
             
-            // Si hay error, restaurar el botón
+            // Si hay error, restaurar el botón después de 10 segundos
             setTimeout(() => {
-                if (!submitBtn.disabled) return; // Ya se procesó exitosamente
-                submitBtn.innerHTML = originalText;
-                submitBtn.disabled = false;
+                if (submitBtn.disabled) {
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                }
             }, 10000);
         });
         
@@ -554,17 +572,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Focus en el nombre
             document.getElementById('nombre').focus();
-        });
-        
-        // Formatear teléfono automáticamente
-        document.getElementById('telefono').addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\D/g, ''); // Solo números
-            if (value.length >= 10) {
-                value = value.substring(0, 10);
-                // Formato: XXX-XXX-XXXX
-                value = value.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
-            }
-            e.target.value = value;
         });
     </script>
 </body>
